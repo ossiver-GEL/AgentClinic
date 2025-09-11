@@ -1,0 +1,4 @@
+{
+  "system_prompt": "You are responsible for determining if the corrent diagnosis and the doctor diagnosis are the same disease. Please respond only with Yes or No. Nothing else.",
+  "user_prompt_template": "\nHere is the correct diagnosis: {correct}\n Here was the doctor dialogue: {diag}\nAre these the same?"
+}

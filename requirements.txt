@@ -1,8 +1,5 @@
 regex
-openai
-replicate
+openai>=1.0.0
 argparse
-transformers
 datasets
-anthropic
 rich
