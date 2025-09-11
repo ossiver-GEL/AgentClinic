@@ -1,28 +1,9 @@
 import argparse
 import re, random, time, json, os
-from openai import OpenAI
 from typing import Optional
+from datetime import datetime
 
-
-# OpenAI client management
-_openai_client = None
-
-def init_openai_client(api_key: Optional[str], base_url: Optional[str] = None):
-    global _openai_client
-    kwargs = {}
-    if api_key:
-        kwargs["api_key"] = api_key
-    if base_url:
-        kwargs["base_url"] = base_url
-    _openai_client = OpenAI(**kwargs)
-
-
-def get_openai_client() -> OpenAI:
-    global _openai_client
-    if _openai_client is None:
-        # Fallback to environment configuration
-        _openai_client = OpenAI()
-    return _openai_client
+from llm import init_openai_client, get_openai_client, query_model, set_llm_config
 
 
 # Prompt loading with caching
@@ -38,45 +19,6 @@ def load_prompts_json(name: str) -> dict:
         data = json.load(f)
     PROMPT_CACHE[name] = data
     return data
-
-
-def query_model(model_str, prompt, system_prompt, tries=30, timeout=20.0, image_requested=False, scene=None, max_prompt_len=2**14, clip_prompt=False):
-    """Query an OpenAI chat model using latest SDK.
-    - model_str: exact model name (e.g., "gpt-4o-mini", "gpt-4o")
-    - If image_requested is True and scene has image_url, send a multimodal message.
-    """
-    client = get_openai_client()
-    for _ in range(tries):
-        if clip_prompt:
-            prompt = prompt[:max_prompt_len]
-        try:
-            if image_requested and scene is not None and getattr(scene, "image_url", None):
-                user_content = [
-                    {"type": "text", "text": prompt},
-                    {"type": "image_url", "image_url": {"url": f"{scene.image_url}"}},
-                ]
-                messages = [
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_content},
-                ]
-            else:
-                messages = [
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": prompt},
-                ]
-            resp = client.chat.completions.create(
-                model=model_str,
-                messages=messages,
-                temperature=0.05,
-                max_tokens=200,
-            )
-            answer = resp.choices[0].message.content
-            answer = re.sub(r"\s+", " ", answer)
-            return answer
-        except Exception:
-            time.sleep(timeout)
-            continue
-    raise Exception("Max retries: timeout")
 
 
 class ScenarioMedQA:
@@ -458,6 +400,15 @@ def main(config_path: str):
     api_key = openai_cfg.get("api_key") or os.environ.get("OPENAI_API_KEY")
     base_url = openai_cfg.get("base_url")
     init_openai_client(api_key, base_url)
+    
+    # LLM unified Responses API configuration (optional)
+    # Supports two optional sections in config JSON:
+    # 1) "responses": merged into client.responses.create kwargs (excluding model/input)
+    # 2) "runtime": controls retry/timeout/prompt clipping
+    llm_cfg = cfg.get("llm", {})
+    responses_cfg = llm_cfg.get("responses") or cfg.get("responses")
+    runtime_cfg = llm_cfg.get("runtime") or cfg.get("runtime")
+    set_llm_config(responses=responses_cfg, runtime=runtime_cfg)
 
     # Run settings
     run_cfg = cfg.get("run", {})
@@ -472,6 +423,20 @@ def main(config_path: str):
     img_request = bool(run_cfg.get("doctor_image_request", False))
     num_scenarios = run_cfg.get("num_scenarios", None)
     total_inferences = int(run_cfg.get("total_inferences", 20))
+
+    # Initialize runs output directory and artifacts
+    output_root = run_cfg.get("output_dir", "runs")
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    out_dir = os.path.join(output_root, f"{dataset}_{ts}")
+    os.makedirs(out_dir, exist_ok=True)
+    # Persist the effective config for this run
+    try:
+        with open(os.path.join(out_dir, "config.used.json"), "w", encoding="utf-8") as f_out:
+            json.dump(cfg, f_out, ensure_ascii=False, indent=2)
+    except Exception as e:
+        print("Warning: failed to write config.used.json:", e)
+    scenario_jsonl_path = os.path.join(out_dir, "scenarios.jsonl")
+    run_start_time = time.time()
 
     # Dataset paths (optional overrides)
     ds_paths = cfg.get("datasets", {})
@@ -517,6 +482,8 @@ def main(config_path: str):
             max_infs=total_inferences,
             img_request=img_request)
 
+        diagnosed = False
+
         doctor_dialogue = ""
         for _inf_id in range(total_inferences):
             # Check for medical image request
@@ -542,6 +509,33 @@ def main(config_path: str):
                 if correctness: total_correct += 1
                 print("\nCorrect answer:", scenario.diagnosis_information())
                 print("Scene {}, The diagnosis was ".format(_scenario_id), "CORRECT" if correctness else "INCORRECT", int((total_correct/total_presents)*100))
+                # Write per-scenario record (diagnosed)
+                try:
+                    record = {
+                        "scenario_id": _scenario_id,
+                        "dataset": dataset,
+                        "status": "diagnosed",
+                        "num_turns": _inf_id + 1,
+                        "correct": bool(correctness),
+                        "ground_truth": scenario.diagnosis_information(),
+                        "diagnosis_text": doctor_dialogue,
+                        "doctor_llm": doctor_llm,
+                        "patient_llm": patient_llm,
+                        "measurement_llm": measurement_llm,
+                        "moderator_llm": moderator_llm,
+                        "max_infs": total_inferences,
+                        "image_request_enabled": img_request,
+                        "doctor_hist": doctor_agent.agent_hist,
+                        "patient_hist": patient_agent.agent_hist,
+                        "measurement_hist": meas_agent.agent_hist,
+                        "llm_responses_config": responses_cfg,
+                        "llm_runtime_config": runtime_cfg,
+                    }
+                    with open(scenario_jsonl_path, "a", encoding="utf-8") as f_out:
+                        f_out.write(json.dumps(record, ensure_ascii=False) + "\n")
+                except Exception as e:
+                    print("Warning: failed to write scenario record:", e)
+                diagnosed = True
                 break
             # Obtain medical exam from measurement reader
             if "REQUEST TEST" in doctor_dialogue:
@@ -558,6 +552,60 @@ def main(config_path: str):
                 meas_agent.add_hist(pi_dialogue)
             # Prevent API timeouts
             time.sleep(1.0)
+
+        # If doctor did not provide a final diagnosis within max_infs, write record
+        if not diagnosed:
+            try:
+                record = {
+                    "scenario_id": _scenario_id,
+                    "dataset": dataset,
+                    "status": "max_infs_reached",
+                    "num_turns": total_inferences,
+                    "correct": None,
+                    "ground_truth": scenario.diagnosis_information(),
+                    "final_doctor_dialogue": doctor_dialogue,
+                    "doctor_llm": doctor_llm,
+                    "patient_llm": patient_llm,
+                    "measurement_llm": measurement_llm,
+                    "moderator_llm": moderator_llm,
+                    "max_infs": total_inferences,
+                    "image_request_enabled": img_request,
+                    "doctor_hist": doctor_agent.agent_hist,
+                    "patient_hist": patient_agent.agent_hist,
+                    "measurement_hist": meas_agent.agent_hist,
+                    "llm_responses_config": responses_cfg,
+                    "llm_runtime_config": runtime_cfg,
+                }
+                with open(scenario_jsonl_path, "a", encoding="utf-8") as f_out:
+                    f_out.write(json.dumps(record, ensure_ascii=False) + "\n")
+            except Exception as e:
+                print("Warning: failed to write scenario record (max_infs):", e)
+
+    # Write summary of the run
+    try:
+        total_time = time.time() - run_start_time
+        summary = {
+            "dataset": dataset,
+            "doctor_llm": doctor_llm,
+            "patient_llm": patient_llm,
+            "measurement_llm": measurement_llm,
+            "moderator_llm": moderator_llm,
+            "num_scenarios": min(num_scenarios, scenario_loader.num_scenarios),
+            "total_presented": total_presents,
+            "total_correct": total_correct,
+            "accuracy": (total_correct/total_presents) if total_presents > 0 else None,
+            "total_inferences": total_inferences,
+            "duration_seconds": total_time,
+            "timestamp": ts,
+            "output_dir": out_dir,
+            "scenario_file": os.path.basename(scenario_jsonl_path),
+            "llm_responses_config": responses_cfg,
+            "llm_runtime_config": runtime_cfg,
+        }
+        with open(os.path.join(out_dir, "summary.json"), "w", encoding="utf-8") as f_out:
+            json.dump(summary, f_out, ensure_ascii=False, indent=2)
+    except Exception as e:
+        print("Warning: failed to write summary.json:", e)
 
 
 if __name__ == "__main__":
