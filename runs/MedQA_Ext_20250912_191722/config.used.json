@@ -1,0 +1,43 @@
+{
+  "openai": {
+    "api_key": "sk-piggFmUfUN7BcfdpxlxKqpGNkcEXic55xCUTPKK27RcbWB2x",
+    "base_url": "https://api.bianxie.ai/v1"
+  },
+  "run": {
+    "inf_type": "llm",
+    "doctor_bias": "None",
+    "patient_bias": "None",
+    "doctor_llm": "gpt-5",
+    "patient_llm": "gpt-4o-mini",
+    "measurement_llm": "gpt-4o-mini",
+    "moderator_llm": "gpt-4o-mini",
+    "dataset": "MedQA_Ext",
+    "doctor_image_request": false,
+    "num_scenarios": 200,
+    "total_inferences": 20
+  },
+  "llm": {
+    "responses": {
+      "max_output_tokens": 256,
+      "reasoning": {
+        "effort": "minimal"
+      },
+      "text": {
+        "verbosity": "low"
+      }
+    },
+    "runtime": {
+      "tries": 30,
+      "timeout": 2.0,
+      "clip_prompt": false,
+      "max_prompt_len": 16384
+    }
+  },
+  "datasets": {
+    "MedQA": "data/agentclinic_medqa.jsonl",
+    "MedQA_Ext": "data/agentclinic_medqa_extended.jsonl",
+    "NEJM": "data/agentclinic_nejm.jsonl",
+    "NEJM_Ext": "data/agentclinic_nejm_extended.jsonl",
+    "MIMICIV": "data/agentclinic_mimiciv.jsonl"
+  }
+}
