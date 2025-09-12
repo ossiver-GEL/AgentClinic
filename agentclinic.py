@@ -20,7 +20,6 @@ def load_prompts_json(name: str) -> dict:
     PROMPT_CACHE[name] = data
     return data
 
-
 class ScenarioMedQA:
     def __init__(self, scenario_dict) -> None:
         self.scenario_dict = scenario_dict

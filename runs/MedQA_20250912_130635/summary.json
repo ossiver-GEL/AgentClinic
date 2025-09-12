@@ -1,0 +1,31 @@
+{
+  "dataset": "MedQA",
+  "doctor_llm": "gpt-5",
+  "patient_llm": "gpt-4o-mini",
+  "measurement_llm": "gpt-4o-mini",
+  "moderator_llm": "gpt-4o-mini",
+  "num_scenarios": 10,
+  "total_presented": 10,
+  "total_correct": 10,
+  "accuracy": 1.0,
+  "total_inferences": 20,
+  "duration_seconds": 1077.2324199676514,
+  "timestamp": "20250912_130635",
+  "output_dir": "runs\\MedQA_20250912_130635",
+  "scenario_file": "scenarios.jsonl",
+  "llm_responses_config": {
+    "max_output_tokens": 256,
+    "reasoning": {
+      "effort": "minimal"
+    },
+    "text": {
+      "verbosity": "low"
+    }
+  },
+  "llm_runtime_config": {
+    "tries": 30,
+    "timeout": 2.0,
+    "clip_prompt": false,
+    "max_prompt_len": 16384
+  }
+}

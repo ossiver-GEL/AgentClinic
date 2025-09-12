@@ -14,7 +14,8 @@
     "dataset": "MedQA",
     "doctor_image_request": false,
     "num_scenarios": 1,
-    "total_inferences": 20
+    "total_inferences": 20,
+    "dylan_repo_dir": "dylan_doctor"
   },
   "llm": {
     "responses": {
@@ -34,10 +35,10 @@
     }
   },
   "datasets": {
-    "MedQA": "data/agentclinic_medqa.jsonl",
-    "MedQA_Ext": "data/agentclinic_medqa_extended.jsonl",
-    "NEJM": "data/agentclinic_nejm.jsonl",
-    "NEJM_Ext": "data/agentclinic_nejm_extended.jsonl",
-    "MIMICIV": "data/agentclinic_mimiciv.jsonl"
+    "MedQA": "agentclinic_medqa.jsonl",
+    "MedQA_Ext": "agentclinic_medqa_extended.jsonl",
+    "NEJM": "agentclinic_nejm.jsonl",
+    "NEJM_Ext": "agentclinic_nejm_extended.jsonl",
+    "MIMICIV": "agentclinic_mimiciv.jsonl"
   }
 }

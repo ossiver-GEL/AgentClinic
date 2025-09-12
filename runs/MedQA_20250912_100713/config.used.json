@@ -7,14 +7,14 @@
     "inf_type": "llm",
     "doctor_bias": "None",
     "patient_bias": "None",
-    "doctor_llm": "gpt-4o-mini",
+    "doctor_llm": "gpt-5-mini",
     "patient_llm": "gpt-4o-mini",
     "measurement_llm": "gpt-4o-mini",
     "moderator_llm": "gpt-4o-mini",
     "dataset": "MedQA",
     "doctor_image_request": false,
-    "num_scenarios": 1,
-    "total_inferences": 20
+    "num_scenarios": 3,
+    "total_inferences": 10
   },
   "llm": {
     "responses": {
@@ -34,10 +34,10 @@
     }
   },
   "datasets": {
-    "MedQA": "data/agentclinic_medqa.jsonl",
-    "MedQA_Ext": "data/agentclinic_medqa_extended.jsonl",
-    "NEJM": "data/agentclinic_nejm.jsonl",
-    "NEJM_Ext": "data/agentclinic_nejm_extended.jsonl",
-    "MIMICIV": "data/agentclinic_mimiciv.jsonl"
+    "MedQA": "agentclinic_medqa.jsonl",
+    "MedQA_Ext": "agentclinic_medqa_extended.jsonl",
+    "NEJM": "agentclinic_nejm.jsonl",
+    "NEJM_Ext": "agentclinic_nejm_extended.jsonl",
+    "MIMICIV": "agentclinic_mimiciv.jsonl"
   }
 }
