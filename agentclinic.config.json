@@ -34,10 +34,10 @@
     }
   },
   "datasets": {
-    "MedQA": "data/agentclinic_medqa.jsonl",
-    "MedQA_Ext": "data/agentclinic_medqa_extended.jsonl",
-    "NEJM": "data/agentclinic_nejm.jsonl",
-    "NEJM_Ext": "data/agentclinic_nejm_extended.jsonl",
-    "MIMICIV": "data/agentclinic_mimiciv.jsonl"
+    "MedQA": "processed_data/agentclinic_medqa.jsonl",
+    "MedQA_Ext": "processed_data/agentclinic_medqa_extended.jsonl",
+    "NEJM": "processed_data/agentclinic_nejm.jsonl",
+    "NEJM_Ext": "processed_data/agentclinic_nejm_extended.jsonl",
+    "MIMICIV": "processed_data/agentclinic_mimiciv.jsonl"
   }
 }

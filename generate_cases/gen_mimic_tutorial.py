@@ -9,7 +9,7 @@ openai.api_key = "insert-openai-api-key-here"
 # And place it into this folder (generated_cases)
 
 # Change this according to need
-base_str = "./"
+base_str = "./datasets/mimic-iv-3.1"
 
 patient_info = dict()
 with open(base_str + "hosp/admissions.csv", "r") as f:
