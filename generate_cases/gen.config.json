@@ -1,0 +1,16 @@
+{
+    "common": {
+        "llm_config": "../llm.config.json",
+        "model": "gpt-4o-mini",
+        "sleep_seconds": 1.0
+    },
+    "medqa": {
+        "limit": 30,
+        "output": "processed_data/medqa_grounded.jsonl"
+    },
+    "mimic": {
+        "limit": 30,
+        "output": "processed_data/agentclinic_mimiciv.jsonl",
+        "base_dataset_dir": "datasets/mimic-iv-3.1/"
+    }
+}

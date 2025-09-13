@@ -3,7 +3,7 @@ import re, random, time, json, os
 from typing import Optional
 from datetime import datetime
 
-from llm import init_openai_client, get_openai_client, query_model, set_llm_config
+from llm import init_openai_client, get_openai_client, query_model, set_llm_config, load_llm_config
 
 
 # Prompt loading with caching
@@ -389,25 +389,28 @@ def compare_results(diagnosis, correct_diagnosis, moderator_llm):
 # Main entry with config
 # =========================
 
-def main(config_path: str):
-    # Load configuration
+def main(config_path: str, llm_config_path: str):
+    # Load main (run + datasets) configuration
     with open(config_path, "r", encoding="utf-8") as f:
-        cfg = json.load(f)
+        main_cfg = json.load(f)
 
-    # Initialize OpenAI client
-    openai_cfg = cfg.get("openai", {})
-    api_key = openai_cfg.get("api_key") or os.environ.get("OPENAI_API_KEY")
-    base_url = openai_cfg.get("base_url")
-    init_openai_client(api_key, base_url)
-    
-    # LLM unified Responses API configuration (optional)
-    # Supports two optional sections in config JSON:
-    # 1) "responses": merged into client.responses.create kwargs (excluding model/input)
-    # 2) "runtime": controls retry/timeout/prompt clipping
-    llm_cfg = cfg.get("llm", {})
-    responses_cfg = llm_cfg.get("responses") or cfg.get("responses")
-    runtime_cfg = llm_cfg.get("runtime") or cfg.get("runtime")
-    set_llm_config(responses=responses_cfg, runtime=runtime_cfg)
+    # Load & apply LLM configuration centrally
+    llm_file_cfg = load_llm_config(llm_config_path, required=True)
+    openai_cfg = llm_file_cfg.get("openai", {})
+    llm_cfg = llm_file_cfg.get("llm", {})
+    responses_cfg = llm_cfg.get("responses")
+    runtime_cfg = llm_cfg.get("runtime")
+
+    # Construct merged cfg for downstream (do not reintroduce deprecated structure)
+    cfg = {
+        **main_cfg,
+        "openai": openai_cfg,
+        "llm": llm_cfg,
+        "_meta": {
+            "main_config": config_path,
+            "llm_config": llm_config_path
+        }
+    }
 
     # Run settings
     run_cfg = cfg.get("run", {})
@@ -609,7 +612,8 @@ def main(config_path: str):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Medical Diagnosis Simulation')
-    parser.add_argument('--config', type=str, default='agentclinic.config.json', help='Path to configuration JSON file')
+    parser.add_argument('--config', type=str, default='agentclinic.config.json', help='Path to main configuration JSON file (run + datasets)')
+    parser.add_argument('--llm-config', type=str, default='llm.config.json', help='Path to LLM configuration JSON file (openai + llm)')
     args = parser.parse_args()
 
-    main(args.config)
+    main(args.config, args.llm_config)

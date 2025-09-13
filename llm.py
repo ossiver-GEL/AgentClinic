@@ -15,6 +15,32 @@ _llm_runtime_cfg = {
     "max_prompt_len": 2 ** 14,
 }
 
+def load_llm_config(path: str = "llm.config.json") -> dict:
+        """Load LLM configuration JSON (containing 'openai' and 'llm' sections) and
+        initialize global client + runtime settings.
+
+        Parameters:
+            path: Path to llm.config.json.
+            required: If True, raise FileNotFoundError when missing; else return {}.
+
+        Returns:
+            A dictionary: { 'openai': {...}, 'llm': {...} }
+        """
+        import json, os
+        if not os.path.exists(path):
+            raise FileNotFoundError(f"LLM config file not found: {path}")
+        with open(path, 'r', encoding='utf-8') as f:
+                cfg = json.load(f)
+        openai_cfg = cfg.get('openai', {})
+        llm_cfg = cfg.get('llm', {})
+        api_key = openai_cfg.get('api_key') or os.environ.get('OPENAI_API_KEY')
+        base_url = openai_cfg.get('base_url')
+        init_openai_client(api_key, base_url)
+        responses_cfg = llm_cfg.get('responses')
+        runtime_cfg = llm_cfg.get('runtime')
+        set_llm_config(responses=responses_cfg, runtime=runtime_cfg)
+        return cfg
+
 
 def init_openai_client(api_key: Optional[str], base_url: Optional[str] = None):
     global _openai_client
