@@ -3,13 +3,13 @@
     "inf_type": "llm",
     "doctor_bias": "None",
     "patient_bias": "None",
-    "doctor_llm": "gpt-5",
+    "doctor_llm": "gpt-4o-mini",
     "patient_llm": "gpt-4o-mini",
     "measurement_llm": "gpt-4o-mini",
     "moderator_llm": "gpt-4o-mini",
-    "dataset": "MedQA_Ext",
+    "dataset": "MIMICIV",
     "doctor_image_request": false,
-    "num_scenarios": 200,
+    "num_scenarios": 20,
     "total_inferences": 20
   },
   "datasets": {

@@ -1,5 +1,7 @@
 import argparse
 import re, random, time, json, os
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import threading
 from typing import Optional
 from datetime import datetime
 
@@ -389,13 +391,13 @@ def compare_results(diagnosis, correct_diagnosis, moderator_llm):
 # Main entry with config
 # =========================
 
-def main(config_path: str, llm_config_path: str):
+def main(config_path: str, llm_config_path: str, workers: int = 1):
     # Load main (run + datasets) configuration
     with open(config_path, "r", encoding="utf-8") as f:
         main_cfg = json.load(f)
 
     # Load & apply LLM configuration centrally
-    llm_file_cfg = load_llm_config(llm_config_path, required=True)
+    llm_file_cfg = load_llm_config()
     openai_cfg = llm_file_cfg.get("openai", {})
     llm_cfg = llm_file_cfg.get("llm", {})
     responses_cfg = llm_cfg.get("responses")
@@ -464,108 +466,42 @@ def main(config_path: str, llm_config_path: str):
     if num_scenarios is None:
         num_scenarios = scenario_loader.num_scenarios
 
-    for _scenario_id in range(0, min(num_scenarios, scenario_loader.num_scenarios)):
-        total_presents += 1
-        pi_dialogue = str()
-        # Initialize scenario
-        scenario = scenario_loader.get_scenario(id=_scenario_id)
-        # Initialize agents
-        meas_agent = MeasurementAgent(
-            scenario=scenario,
-            backend_str=measurement_llm)
-        patient_agent = PatientAgent(
-            scenario=scenario,
-            bias_present=patient_bias,
-            backend_str=patient_llm)
-        doctor_agent = DoctorAgent(
-            scenario=scenario,
-            bias_present=doctor_bias,
-            backend_str=doctor_llm,
-            max_infs=total_inferences,
-            img_request=img_request)
+    # Parallel worker for a single scenario
+    lock = threading.Lock()
 
-        diagnosed = False
-
+    def run_scenario(scenario_id: int):
+        nonlocal total_correct
+        scenario = scenario_loader.get_scenario(id=scenario_id)
+        meas_agent = MeasurementAgent(scenario=scenario, backend_str=measurement_llm)
+        patient_agent = PatientAgent(scenario=scenario, bias_present=patient_bias, backend_str=patient_llm)
+        doctor_agent = DoctorAgent(scenario=scenario, bias_present=doctor_bias, backend_str=doctor_llm, max_infs=total_inferences, img_request=img_request)
+        pi_dialogue = ""
         doctor_dialogue = ""
+        diagnosed = False
         for _inf_id in range(total_inferences):
-            # Check for medical image request
             if dataset == "NEJM":
-                if img_request:
-                    imgs = "REQUEST IMAGES" in doctor_dialogue
-                else:
-                    imgs = True
+                imgs = ("REQUEST IMAGES" in doctor_dialogue) if img_request else True
             else:
                 imgs = False
-            # Check if final inference
             if _inf_id == total_inferences - 1:
                 pi_dialogue += "This is the final question. Please provide a diagnosis.\n"
-            # Obtain doctor dialogue (human or llm agent)
             if inf_type == "human_doctor":
-                doctor_dialogue = input("\nQuestion for patient: ")
+                doctor_dialogue = input(f"\n[Scene {scenario_id}] Question for patient: ")
             else:
                 doctor_dialogue = doctor_agent.inference_doctor(pi_dialogue, image_requested=imgs)
-            print("Doctor [{}%]:".format(int(((_inf_id+1)/total_inferences)*100)), doctor_dialogue)
-            # Doctor has arrived at a diagnosis, check correctness
             if "DIAGNOSIS READY" in doctor_dialogue:
                 correctness = compare_results(doctor_dialogue, scenario.diagnosis_information(), moderator_llm) == "yes"
-                if correctness: total_correct += 1
-                print("\nCorrect answer:", scenario.diagnosis_information())
-                print("Scene {}, The diagnosis was ".format(_scenario_id), "CORRECT" if correctness else "INCORRECT", int((total_correct/total_presents)*100))
-                # Write per-scenario record (diagnosed)
-                try:
-                    record = {
-                        "scenario_id": _scenario_id,
-                        "dataset": dataset,
-                        "status": "diagnosed",
-                        "num_turns": _inf_id + 1,
-                        "correct": bool(correctness),
-                        "ground_truth": scenario.diagnosis_information(),
-                        "diagnosis_text": doctor_dialogue,
-                        "doctor_llm": doctor_llm,
-                        "patient_llm": patient_llm,
-                        "measurement_llm": measurement_llm,
-                        "moderator_llm": moderator_llm,
-                        "max_infs": total_inferences,
-                        "image_request_enabled": img_request,
-                        "doctor_hist": doctor_agent.agent_hist,
-                        "patient_hist": patient_agent.agent_hist,
-                        "measurement_hist": meas_agent.agent_hist,
-                        "llm_responses_config": responses_cfg,
-                        "llm_runtime_config": runtime_cfg,
-                    }
-                    with open(scenario_jsonl_path, "a", encoding="utf-8") as f_out:
-                        f_out.write(json.dumps(record, ensure_ascii=False) + "\n")
-                except Exception as e:
-                    print("Warning: failed to write scenario record:", e)
-                diagnosed = True
-                break
-            # Obtain medical exam from measurement reader
-            if "REQUEST TEST" in doctor_dialogue:
-                pi_dialogue = meas_agent.inference_measurement(doctor_dialogue,)
-                print("Measurement [{}%]:".format(int(((_inf_id+1)/total_inferences)*100)), pi_dialogue)
-                patient_agent.add_hist(pi_dialogue)
-            # Obtain response from patient
-            else:
-                if inf_type == "human_patient":
-                    pi_dialogue = input("\nResponse to doctor: ")
-                else:
-                    pi_dialogue = patient_agent.inference_patient(doctor_dialogue)
-                print("Patient [{}%]:".format(int(((_inf_id+1)/total_inferences)*100)), pi_dialogue)
-                meas_agent.add_hist(pi_dialogue)
-            # Prevent API timeouts
-            time.sleep(1.0)
-
-        # If doctor did not provide a final diagnosis within max_infs, write record
-        if not diagnosed:
-            try:
+                with lock:
+                    if correctness:
+                        total_correct += 1
                 record = {
-                    "scenario_id": _scenario_id,
+                    "scenario_id": scenario_id,
                     "dataset": dataset,
-                    "status": "max_infs_reached",
-                    "num_turns": total_inferences,
-                    "correct": None,
+                    "status": "diagnosed",
+                    "num_turns": _inf_id + 1,
+                    "correct": bool(correctness),
                     "ground_truth": scenario.diagnosis_information(),
-                    "final_doctor_dialogue": doctor_dialogue,
+                    "diagnosis_text": doctor_dialogue,
                     "doctor_llm": doctor_llm,
                     "patient_llm": patient_llm,
                     "measurement_llm": measurement_llm,
@@ -578,10 +514,56 @@ def main(config_path: str, llm_config_path: str):
                     "llm_responses_config": responses_cfg,
                     "llm_runtime_config": runtime_cfg,
                 }
+                with lock:
+                    with open(scenario_jsonl_path, "a", encoding="utf-8") as f_out:
+                        f_out.write(json.dumps(record, ensure_ascii=False) + "\n")
+                diagnosed = True
+                break
+            if "REQUEST TEST" in doctor_dialogue:
+                pi_dialogue = meas_agent.inference_measurement(doctor_dialogue)
+                patient_agent.add_hist(pi_dialogue)
+            else:
+                if inf_type == "human_patient":
+                    pi_dialogue = input(f"\n[Scene {scenario_id}] Response to doctor: ")
+                else:
+                    pi_dialogue = patient_agent.inference_patient(doctor_dialogue)
+                meas_agent.add_hist(pi_dialogue)
+            time.sleep(1.0)
+        if not diagnosed:
+            record = {
+                "scenario_id": scenario_id,
+                "dataset": dataset,
+                "status": "max_infs_reached",
+                "num_turns": total_inferences,
+                "correct": None,
+                "ground_truth": scenario.diagnosis_information(),
+                "final_doctor_dialogue": doctor_dialogue,
+                "doctor_llm": doctor_llm,
+                "patient_llm": patient_llm,
+                "measurement_llm": measurement_llm,
+                "moderator_llm": moderator_llm,
+                "max_infs": total_inferences,
+                "image_request_enabled": img_request,
+                "doctor_hist": doctor_agent.agent_hist,
+                "patient_hist": patient_agent.agent_hist,
+                "measurement_hist": meas_agent.agent_hist,
+                "llm_responses_config": responses_cfg,
+                "llm_runtime_config": runtime_cfg,
+            }
+            with lock:
                 with open(scenario_jsonl_path, "a", encoding="utf-8") as f_out:
                     f_out.write(json.dumps(record, ensure_ascii=False) + "\n")
-            except Exception as e:
-                print("Warning: failed to write scenario record (max_infs):", e)
+
+    scenario_range = list(range(0, min(num_scenarios, scenario_loader.num_scenarios)))
+    total_presents = len(scenario_range)
+    if workers <= 1 or inf_type.startswith("human_"):
+        for sid in scenario_range:
+            run_scenario(sid)
+    else:
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            futures = {executor.submit(run_scenario, sid): sid for sid in scenario_range}
+            for fut in as_completed(futures):
+                _ = futures[fut]
 
     # Write summary of the run
     try:
@@ -614,6 +596,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Medical Diagnosis Simulation')
     parser.add_argument('--config', type=str, default='agentclinic.config.json', help='Path to main configuration JSON file (run + datasets)')
     parser.add_argument('--llm-config', type=str, default='llm.config.json', help='Path to LLM configuration JSON file (openai + llm)')
+    parser.add_argument('--workers', type=int, default=1, help='Number of parallel scenario workers (ignored for human_* modes)')
     args = parser.parse_args()
 
-    main(args.config, args.llm_config)
+    main(args.config, args.llm_config, args.workers)

@@ -1,5 +1,6 @@
 import os, csv
-import json, re, time, argparse, os, sys, pathlib
+import json, re, time, argparse, os, sys, pathlib, threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Dict, Any, Iterable
 try:
   from tqdm import tqdm
@@ -216,6 +217,7 @@ def main():
   parser.add_argument('--model', type=str, default=None, help='Override model name')
   parser.add_argument('--output', type=str, default=None, help='Override output file')
   parser.add_argument('--limit', type=int, default=None, help='Override generation limit')
+  parser.add_argument('--workers', type=int, default=1, help='Number of parallel LLM workers')
   args = parser.parse_args()
 
   if not os.path.exists(args.gen_config):
@@ -236,30 +238,47 @@ def main():
 
   load_llm_config()
 
-  outp_str = ""
-  cases_generated = 0
   system_prompt = "Generate OSCE cases"
-  for pat_id, _case in list(case_studies.items())[:limit]:
+
+  targets = list(case_studies.items())[:limit]
+  lock = threading.Lock()
+  # Truncate output file first
+  open(output, 'w', encoding='utf-8').close()
+
+  def worker(pat_pair):
+    pat_id, data = pat_pair
     user_prompt = (
-      f"Generate an OSCE JSON for this patient data: {_case}\n"
+      f"Generate an OSCE JSON for this patient data: {data}\n"
       "Follow the example format strictly. Example format:\n" + examples + "\nReturn ONLY JSON."
     )
     try:
       answer = query_model(model, user_prompt, system_prompt)
-
-      print(f"Patient {pat_id} generated. Answer: {answer}")
-
-      answer = re.sub(r"\s+", " ", answer)
+      answer = re.sub(r"\s+", " " , answer)
       answer = answer.replace("```json ", "").replace("```json", "").replace("```", "")
-      json.loads(answer)  # basic validation
-      outp_str += answer + "\n"
-      with open(output, "w", encoding="utf-8") as f:
-        f.write(outp_str)
-      cases_generated += 1
+      json.loads(answer)  # validate
+      with lock:
+        with open(output, 'a', encoding='utf-8') as f:
+          f.write(answer + "\n")
+      return True, pat_id, None
     except Exception as e:
-      print(f"Failed to parse/generate for patient {pat_id}, skipping... Error: {e}")
-      pass
-    time.sleep(sleep_seconds)
+      return False, pat_id, str(e)
+
+  workers = max(1, args.workers)
+  if workers == 1:
+    for item in targets:
+      ok, pid, err = worker(item)
+      if not ok:
+        print(f"Failed to parse/generate for patient {pid}, skipping... Error: {err}")
+      time.sleep(sleep_seconds)
+  else:
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+      futures = {executor.submit(worker, item): item[0] for item in targets}
+      for fut in tqdm(as_completed(futures), total=len(futures), desc='generating'):
+        ok, pid, err = fut.result()
+        if not ok:
+          print(f"Failed to parse/generate for patient {pid}, skipping... Error: {err}")
+        if sleep_seconds > 0:
+          time.sleep(sleep_seconds / workers)
 
 if __name__ == "__main__":
   main()
