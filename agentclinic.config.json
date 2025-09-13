@@ -7,9 +7,9 @@
     "patient_llm": "gpt-4o-mini",
     "measurement_llm": "gpt-4o-mini",
     "moderator_llm": "gpt-4o-mini",
-    "dataset": "MIMICIV",
+    "dataset": "MedQA_Ext",
     "doctor_image_request": false,
-    "num_scenarios": 20,
+    "num_scenarios": 200,
     "total_inferences": 20
   },
   "datasets": {

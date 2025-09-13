@@ -1,7 +1,7 @@
 {
     "common": {
         "llm_config": "../llm.config.json",
-        "model": "gpt-4o-mini",
+        "model": "gpt-5",
         "sleep_seconds": 1.0
     },
     "medqa": {
