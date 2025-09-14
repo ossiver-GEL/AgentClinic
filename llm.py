@@ -10,7 +10,10 @@ _openai_client = None
 _llm_responses_kwargs = {}
 _llm_runtime_cfg = {
     "tries": 30,
+    # retry_delay: sleep seconds between retries on failure
     "timeout": 20.0,
+    # request_timeout: per-request HTTP timeout (seconds) to avoid hangs
+    "request_timeout": 30.0,
     "clip_prompt": False,
     "max_prompt_len": 2 ** 14,
 }
@@ -73,7 +76,7 @@ def set_llm_config(responses: Optional[dict] = None, runtime: Optional[dict] = N
         sanitized.pop("input", None)
         _llm_responses_kwargs = sanitized
     if runtime:
-        for key in ("tries", "timeout", "clip_prompt", "max_prompt_len"):
+        for key in ("tries", "timeout", "request_timeout", "clip_prompt", "max_prompt_len"):
             if key in runtime:
                 _llm_runtime_cfg[key] = runtime[key]
 
@@ -97,7 +100,8 @@ def query_model(
 
     # Allow global runtime cfg to override call-time defaults
     tries = _llm_runtime_cfg.get("tries", tries)
-    timeout = _llm_runtime_cfg.get("timeout", timeout)
+    retry_delay = _llm_runtime_cfg.get("timeout", timeout)
+    request_timeout = _llm_runtime_cfg.get("request_timeout", 30.0)
     clip_prompt = _llm_runtime_cfg.get("clip_prompt", clip_prompt)
     max_prompt_len = _llm_runtime_cfg.get("max_prompt_len", max_prompt_len)
 
@@ -144,7 +148,13 @@ def query_model(
                 kwargs.setdefault("reasoning", {"effort": "minimal"})
                 kwargs.setdefault("text", {"verbosity": "low"})
 
-            resp = client.responses.create(**kwargs)
+            # Apply per-request timeout to avoid indefinite hangs
+            client_req = client
+            try:
+                client_req = client.with_options(timeout=request_timeout)
+            except Exception:
+                pass
+            resp = client_req.responses.create(**kwargs)
 
             # Prefer high-level helper, then fallback to manual parse if empty
             answer = getattr(resp, "output_text", None) or ""
@@ -173,6 +183,6 @@ def query_model(
             else:
                 raise Exception("Empty response")
         except Exception:
-            time.sleep(timeout)
+            time.sleep(retry_delay)
             continue
     raise Exception("Max retries: timeout")
