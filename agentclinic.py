@@ -23,6 +23,65 @@ def load_prompts_json(name: str) -> dict:
     PROMPT_CACHE[name] = data
     return data
 
+def _build_policy_guidance_for_prompt(policy: dict) -> str:
+    """Condense test policy JSON into a compact guidance string for the doctor's system prompt.
+    Keeps it short to avoid bloating context while conveying actionable rules.
+    """
+    parts = []
+    instr = policy.get("instructions")
+    if instr:
+        parts.append(f"Instructions: {instr}")
+    # Constraints summary
+    cons = policy.get("constraints") or {}
+    if cons:
+        human_cons = []
+        if cons.get("one_test_per_turn"): human_cons.append("one test per turn")
+        if cons.get("prefer_low_cost_first"): human_cons.append("prefer low-cost first")
+        if cons.get("avoid_back_to_back_imaging"): human_cons.append("avoid back-to-back imaging")
+        if cons.get("allow_override_for_red_flags"): human_cons.append("allow override for red flags")
+        thr = cons.get("finish_early_if_confident")
+        if isinstance(thr, (int, float)): human_cons.append(f"finish early if ≥{thr:.0%} confident")
+        if human_cons:
+            parts.append("Constraints: " + ", ".join(human_cons))
+    # Categories (names + a few examples)
+    cats = policy.get("categories") or {}
+    if cats:
+        cat_summ = []
+        for name, meta in cats.items():
+            examples = meta.get("typical_tests") or []
+            ex_str = ", ".join(examples[:3]) if examples else ""
+            cost = meta.get("cost_level") or ""
+            seg = name
+            if cost:
+                seg += f"[{cost}]"
+            if ex_str:
+                seg += f": {ex_str}"
+            cat_summ.append(seg)
+        if cat_summ:
+            parts.append("Categories: " + " | ".join(cat_summ))
+    # Transitions (compact from->to)
+    trans = policy.get("transitions") or []
+    if trans:
+        t_summ = []
+        for t in trans[:8]:
+            frm = t.get("from"); to = t.get("to")
+            cond = t.get("conditions")
+            if isinstance(to, list): to = "/".join(to)
+            if frm and to:
+                seg = f"{frm}→{to}"
+                if cond:
+                    # Trim long conditions
+                    cond = str(cond)
+                    if len(cond) > 160:
+                        cond = cond[:157] + "…"
+                    seg += f" (when: {cond})"
+                t_summ.append(seg)
+        if t_summ:
+            parts.append("Transitions: " + "; ".join(t_summ))
+    # Final behavioral rules to make it explicit
+    parts.append("Behavior: plan internally first, then act; if ≥70% confident, output DIAGNOSIS READY; otherwise ask ONE short question or request ONE low-cost, high-yield test consistent with transitions; escalate only if results will change management or red flags present.")
+    return "\n".join(parts)
+
 class ScenarioMedQA:
     def __init__(self, scenario_dict) -> None:
         self.scenario_dict = scenario_dict
@@ -286,7 +345,8 @@ class PatientAgent:
 
 
 class DoctorAgent:
-    def __init__(self, scenario, backend_str="gpt-4o-mini", max_infs=20, bias_present=None, img_request=False) -> None:
+    def __init__(self, scenario, backend_str="gpt-4o-mini", max_infs=20, bias_present=None, img_request=False,
+                 test_policy: Optional[dict] = None, use_test_policy: bool = False) -> None:
         # number of inference calls to the doctor
         self.infs = 0
         # maximum number of inference calls to the doctor
@@ -305,6 +365,9 @@ class DoctorAgent:
         self.pipe = None
         self.img_request = img_request
         self.biases = ["recency", "frequency", "false_consensus", "confirmation", "status_quo", "gender", "race", "sexual_orientation", "cultural", "education", "religion", "socioeconomic"]
+        # Prompt-only test policy integration (A/B switch)
+        self.use_test_policy = bool(use_test_policy)
+        self.test_policy = test_policy if isinstance(test_policy, dict) else None
 
     def generate_bias(self) -> str:
         """ 
@@ -339,7 +402,13 @@ class DoctorAgent:
         base = prompts["system_base"].format(self.MAX_INFS, self.infs)
         base_with_images = base + (prompts.get("system_images_suffix", "") if self.img_request else "")
         presentation = prompts["system_presentation_suffix"].format(self.presentation)
-        return base_with_images + bias_prompt + presentation
+        policy_text = ""
+        if self.use_test_policy and self.test_policy:
+            try:
+                policy_text = "\n\nPlanning/Test Policy:\n" + _build_policy_guidance_for_prompt(self.test_policy)
+            except Exception:
+                policy_text = ""
+        return base_with_images + bias_prompt + presentation + policy_text
 
     def reset(self) -> None:
         self.agent_hist = ""
@@ -402,7 +471,26 @@ class CostEstimatorAgent:
 
     def system_prompt(self) -> str:
         prompts = load_prompts_json("measurement_cost")
-        base = prompts["system_base"]
+        # New structured config: prefer 'instructions' + JSON blocks
+        if "instructions" in prompts or "known_costs" in prompts or "scaling_rules" in prompts:
+            parts = []
+            instr = prompts.get("instructions", "You are a medical test cost estimator. Return ONLY valid JSON.")
+            parts.append(instr)
+            # Embed known costs and rules as JSON for clarity/editability
+            if "known_costs" in prompts:
+                try:
+                    parts.append("Known costs (JSON): " + _json_mod.dumps(prompts["known_costs"], ensure_ascii=False))
+                except Exception:
+                    pass
+            if "scaling_rules" in prompts:
+                try:
+                    parts.append("Scaling rules (JSON): " + _json_mod.dumps(prompts["scaling_rules"], ensure_ascii=False))
+                except Exception:
+                    pass
+            base = "\n".join(parts)
+        else:
+            # Backward compatibility with original 'system_base'
+            base = prompts.get("system_base", "You are a medical test cost estimator.")
         presentation = prompts.get("system_presentation_suffix", "").format(self.information)
         return base + presentation
 
@@ -486,6 +574,15 @@ def main(config_path: str, llm_config_path: str, workers: Optional[int] = None):
     patient_llm = run_cfg.get("patient_llm", "gpt-4o-mini")
     measurement_llm = run_cfg.get("measurement_llm", "gpt-4o-mini")
     moderator_llm = run_cfg.get("moderator_llm", "gpt-4o-mini")
+    # Prompt-only test policy toggle (Integration Path A)
+    doctor_test_policy_enabled = run_cfg.get("doctor_test_policy_enabled", False)
+    doctor_test_policy_name = run_cfg.get("doctor_test_policy", "test_policy")
+    test_policy_dict = None
+    if doctor_test_policy_enabled:
+        try:
+            test_policy_dict = load_prompts_json(doctor_test_policy_name)
+        except Exception:
+            test_policy_dict = None
     measurement_cost_llm = run_cfg.get("measurement_cost_llm", measurement_llm)
     resource_level = run_cfg.get("resource_level", "normal")
     dataset = run_cfg.get("dataset", "MedQA")  # MedQA, MedQA_Ext, MIMICIV, NEJM, NEJM_Ext
@@ -545,7 +642,15 @@ def main(config_path: str, llm_config_path: str, workers: Optional[int] = None):
         scenario = scenario_loader.get_scenario(id=scenario_id)
         meas_agent = MeasurementAgent(scenario=scenario, backend_str=measurement_llm)
         patient_agent = PatientAgent(scenario=scenario, bias_present=patient_bias, backend_str=patient_llm)
-        doctor_agent = DoctorAgent(scenario=scenario, bias_present=doctor_bias, backend_str=doctor_llm, max_infs=total_inferences, img_request=img_request)
+        doctor_agent = DoctorAgent(
+            scenario=scenario,
+            bias_present=doctor_bias,
+            backend_str=doctor_llm,
+            max_infs=total_inferences,
+            img_request=img_request,
+            test_policy=test_policy_dict,
+            use_test_policy=doctor_test_policy_enabled,
+        )
         cost_agent = CostEstimatorAgent(scenario=scenario, backend_str=measurement_cost_llm)
         pi_dialogue = ""
         doctor_dialogue = ""
@@ -716,6 +821,8 @@ def main(config_path: str, llm_config_path: str, workers: Optional[int] = None):
             "resource_level": resource_level,
             "total_tests": total_tests_agg,
             "total_estimated_cost_usd": total_cost_agg_usd,
+            "doctor_test_policy_enabled": doctor_test_policy_enabled,
+            "doctor_test_policy": doctor_test_policy_name if doctor_test_policy_enabled else None,
         }
         with open(os.path.join(out_dir, "summary.json"), "w", encoding="utf-8") as f_out:
             json.dump(summary, f_out, ensure_ascii=False, indent=2)

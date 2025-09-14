@@ -23,6 +23,7 @@
 - [Install](#install)
 - [Evaluation](#evaluation)
 - [Code Examples](#code-examples)
+ - [Test Policy (Prompt-only)](#test-policy-prompt-only)
 
 
 
@@ -111,6 +112,16 @@ python3 agentclinic.py --inf_type "llm" --inf_type "llm" --patient_llm "HF_mistr
 ```
 
 - The extended MedQA and NEJM datasets are available through setting the keyword `agent_dataset=NEJM_Ext` and `agent_dataset=MedQA_Ext`
+
+## Test Policy (Prompt-only)
+
+To encourage cost-aware, stepwise testing without changing outputs programmatically, you can enable a prompt-only test policy for the doctor agent.
+
+- Config keys in `agentclinic.config.json` under `run`:
+  - `doctor_test_policy_enabled`: boolean (default `false`).
+  - `doctor_test_policy`: prompt name in `prompts/` (default `"test_policy"`).
+
+When enabled, the contents of `prompts/test_policy.json` are appended to the doctor system prompt as planning guidance (e.g., prefer low-cost tests first, avoid back-to-back imaging, escalate only with red flags). The run summary records these flags for A/B comparisons: `doctor_test_policy_enabled` and `doctor_test_policy`.
 
 BIBTEX Citation
 ```

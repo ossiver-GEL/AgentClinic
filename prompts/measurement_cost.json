@@ -1,5 +1,194 @@
 {
-  "system_base": "You are a medical test cost estimator. Return ONLY valid JSON (no code fences, no text). Schema: {\n  \"tests\": [\n    {\n      \"test_name\": string,\n      \"estimate_currency\": \"USD\",\n      \"estimate_cost\": number,\n      \"expected_duration_minutes\": number,\n      \"expected_wait_time_minutes\": number,\n      \"assumptions\": string\n    }\n  ]\n}.\nChoose a single point estimate (use midpoints of ranges).\nScale wait time by resource level (normal=1.0x, busy=1.5x, scarce=2.5x).\nIf a requested test is unknown, map to the closest known test and state the mapping in assumptions.\nKnown typical US outpatient costs (USD) and durations:\n- Complete Blood Count (CBC): $10–30, duration 10, wait 10\n- Comprehensive Metabolic Panel (CMP): $10–40, duration 10, wait 10\n- Basic Metabolic Panel (BMP): $10–30, duration 10, wait 10\n- Lipid Panel: $15–40, duration 10, wait 10\n- HbA1c: $10–25, duration 10, wait 10\n- TSH: $20–50, duration 10, wait 10\n- D-dimer: $20–60, duration 10, wait 10\n- Troponin (high-sensitivity): $25–80, duration 10, wait 10\n- CRP: $10–40, duration 10, wait 10\n- ESR: $5–25, duration 10, wait 10\n- Urinalysis: $5–20, duration 10, wait 10\n- Urine Culture: $20–80, duration 10, wait 10\n- Throat Culture: $10–30, duration 10, wait 10\n- Rapid Strep (RADT): $5–30, duration 5, wait 5\n- Blood Culture: $30–80, duration 10, wait 10\n- Chest X-Ray: $60–120, duration 15, wait 30\n- Abdominal X-Ray (KUB): $50–120, duration 15, wait 30\n- ECG / EKG: $20–60, duration 10, wait 10\n- Echocardiogram (TTE): $300–1500, duration 45, wait 1440\n- Ultrasound Abdomen: $100–500, duration 30, wait 120\n- Ultrasound RUQ: $100–400, duration 30, wait 120\n- CT Head (non-contrast): $300–1200, duration 20, wait 120\n- CT Abdomen/Pelvis (contrast): $500–2500, duration 30, wait 180\n- MRI Brain (without/with contrast): $800–4000, duration 45, wait 1440\n- MRI Abdomen: $800–4000, duration 45, wait 1440\n- Chest CT (PE protocol): $400–2000, duration 25, wait 180\nAll costs and times are approximate and vary by site; provide clear assumptions.",
-  "system_presentation_suffix": "\n\nConsider scenario info for plausible mapping: {}\nReturn strictly one JSON object following the schema.",
+  "instructions": "You are a medical test cost estimator. Return ONLY valid JSON (no code fences, no extra text). Schema: {\n  \"tests\": [\n    {\n      \"test_name\": string,\n      \"estimate_currency\": \"USD\",\n      \"estimate_cost\": number,\n      \"expected_duration_minutes\": number,\n      \"expected_wait_time_minutes\": number,\n      \"assumptions\": string\n    }\n  ]\n}. Choose a single point estimate (use midpoints of ranges). If a requested test is unknown, map to the closest known test and state the mapping in assumptions.",
+  "scaling_rules": {
+    "normal": 1.0,
+    "busy": 1.5,
+    "scarce": 2.5
+  },
+  "known_costs": [
+    {
+      "name": "Complete Blood Count (CBC)",
+      "cost_min": 10,
+      "cost_max": 30,
+      "duration_min": 10,
+      "wait_min": 10
+    },
+    {
+      "name": "Comprehensive Metabolic Panel (CMP)",
+      "cost_min": 10,
+      "cost_max": 40,
+      "duration_min": 10,
+      "wait_min": 10
+    },
+    {
+      "name": "Basic Metabolic Panel (BMP)",
+      "cost_min": 10,
+      "cost_max": 30,
+      "duration_min": 10,
+      "wait_min": 10
+    },
+    {
+      "name": "Lipid Panel",
+      "cost_min": 15,
+      "cost_max": 40,
+      "duration_min": 10,
+      "wait_min": 10
+    },
+    {
+      "name": "HbA1c",
+      "cost_min": 10,
+      "cost_max": 25,
+      "duration_min": 10,
+      "wait_min": 10
+    },
+    {
+      "name": "TSH",
+      "cost_min": 20,
+      "cost_max": 50,
+      "duration_min": 10,
+      "wait_min": 10
+    },
+    {
+      "name": "D-dimer",
+      "cost_min": 20,
+      "cost_max": 60,
+      "duration_min": 10,
+      "wait_min": 10
+    },
+    {
+      "name": "Troponin (high-sensitivity)",
+      "cost_min": 25,
+      "cost_max": 80,
+      "duration_min": 10,
+      "wait_min": 10
+    },
+    {
+      "name": "CRP",
+      "cost_min": 10,
+      "cost_max": 40,
+      "duration_min": 10,
+      "wait_min": 10
+    },
+    {
+      "name": "ESR",
+      "cost_min": 5,
+      "cost_max": 25,
+      "duration_min": 10,
+      "wait_min": 10
+    },
+    {
+      "name": "Urinalysis",
+      "cost_min": 5,
+      "cost_max": 20,
+      "duration_min": 10,
+      "wait_min": 10
+    },
+    {
+      "name": "Urine Culture",
+      "cost_min": 20,
+      "cost_max": 80,
+      "duration_min": 10,
+      "wait_min": 10
+    },
+    {
+      "name": "Throat Culture",
+      "cost_min": 10,
+      "cost_max": 30,
+      "duration_min": 10,
+      "wait_min": 10
+    },
+    {
+      "name": "Rapid Strep (RADT)",
+      "cost_min": 5,
+      "cost_max": 30,
+      "duration_min": 5,
+      "wait_min": 5
+    },
+    {
+      "name": "Blood Culture",
+      "cost_min": 30,
+      "cost_max": 80,
+      "duration_min": 10,
+      "wait_min": 10
+    },
+    {
+      "name": "Chest X-Ray",
+      "cost_min": 60,
+      "cost_max": 120,
+      "duration_min": 15,
+      "wait_min": 30
+    },
+    {
+      "name": "Abdominal X-Ray (KUB)",
+      "cost_min": 50,
+      "cost_max": 120,
+      "duration_min": 15,
+      "wait_min": 30
+    },
+    {
+      "name": "ECG / EKG",
+      "cost_min": 20,
+      "cost_max": 60,
+      "duration_min": 10,
+      "wait_min": 10
+    },
+    {
+      "name": "Echocardiogram (TTE)",
+      "cost_min": 300,
+      "cost_max": 1500,
+      "duration_min": 45,
+      "wait_min": 1440
+    },
+    {
+      "name": "Ultrasound Abdomen",
+      "cost_min": 100,
+      "cost_max": 500,
+      "duration_min": 30,
+      "wait_min": 120
+    },
+    {
+      "name": "Ultrasound RUQ",
+      "cost_min": 100,
+      "cost_max": 400,
+      "duration_min": 30,
+      "wait_min": 120
+    },
+    {
+      "name": "CT Head (non-contrast)",
+      "cost_min": 300,
+      "cost_max": 1200,
+      "duration_min": 20,
+      "wait_min": 120
+    },
+    {
+      "name": "CT Abdomen/Pelvis (contrast)",
+      "cost_min": 500,
+      "cost_max": 2500,
+      "duration_min": 30,
+      "wait_min": 180
+    },
+    {
+      "name": "MRI Brain (without/with contrast)",
+      "cost_min": 800,
+      "cost_max": 4000,
+      "duration_min": 45,
+      "wait_min": 1440
+    },
+    {
+      "name": "MRI Abdomen",
+      "cost_min": 800,
+      "cost_max": 4000,
+      "duration_min": 45,
+      "wait_min": 1440
+    },
+    {
+      "name": "Chest CT (PE protocol)",
+      "cost_min": 400,
+      "cost_max": 2000,
+      "duration_min": 25,
+      "wait_min": 180
+    }
+  ],
+  "system_presentation_suffix": "\nConsider scenario info for plausible mapping: {}",
   "user_prompt_template": "Here is a history: {agent_hist}\nDoctor message: {question}\nResource level: {resource_level}\nScenario info: {scenario_info}\nExtract exactly the requested test(s) from the doctor message and output JSON as specified."
 }

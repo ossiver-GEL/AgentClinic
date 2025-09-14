@@ -1,0 +1,97 @@
+{
+  "instructions": "Plan tests from cheap, high-yield to expensive, specialized. Start with history/physical; only request a test if its result can change management or meaningfully reduce diagnostic uncertainty. If you are already ≥70% confident about the top diagnosis, output DIAGNOSIS READY instead of requesting more tests. At most one test per turn. Avoid back-to-back imaging unless new information justifies it. You may override and escalate for red-flag features (e.g., focal neurological deficit, acute abdomen, hemodynamic instability).",
+  "constraints": {
+    "one_test_per_turn": true,
+    "prefer_low_cost_first": true,
+    "avoid_back_to_back_imaging": true,
+    "allow_override_for_red_flags": true,
+    "finish_early_if_confident": 0.7
+  },
+  "categories": {
+    "labs_basic": {
+      "description": "Low-cost labs; broad screening and triage.",
+      "typical_tests": ["Complete Blood Count (CBC)", "Basic/Comprehensive Metabolic Panel (BMP/CMP)", "HbA1c", "TSH", "CRP", "ESR", "D-dimer", "Troponin"],
+      "cost_level": "low"
+    },
+    "microbiology": {
+      "description": "Rapid/inexpensive pathogen screens and cultures.",
+      "typical_tests": ["Urinalysis", "Urine Culture", "Throat Culture", "Rapid Strep (RADT)", "Stool Culture", "Wound Culture"],
+      "cost_level": "low"
+    },
+    "imaging_plain": {
+      "description": "Plain radiographs; first-line for many MSK and chest complaints.",
+      "typical_tests": ["Chest X-Ray", "Abdominal X-Ray (KUB)", "Extremity X-Ray"],
+      "cost_level": "low"
+    },
+    "imaging_ultrasound": {
+      "description": "Ultrasound; abdominal/RUQ/pelvic first-line and no radiation.",
+      "typical_tests": ["Ultrasound Abdomen", "Ultrasound RUQ", "Pelvic Ultrasound"],
+      "cost_level": "low_to_medium"
+    },
+    "imaging_ct": {
+      "description": "CT; higher cost/radiation; use if US/X-ray non-diagnostic or red flags.",
+      "typical_tests": ["CT Head (non-contrast)", "CT Abdomen/Pelvis (contrast)", "Chest CT (PE protocol)"],
+      "cost_level": "medium_to_high"
+    },
+    "imaging_mri": {
+      "description": "MRI; highest cost; soft tissue/CNS detail; use when results will change management.",
+      "typical_tests": ["MRI Brain", "MRI Spine", "MRI Abdomen"],
+      "cost_level": "high"
+    },
+    "cardiology": {
+      "description": "Cardiac evaluation pathway.",
+      "typical_tests": ["ECG / EKG", "Troponin", "Echocardiogram (TTE)"],
+      "cost_level": "mixed"
+    },
+    "neuro_functional": {
+      "description": "Functional neuro tests.",
+      "typical_tests": ["EEG"],
+      "cost_level": "medium"
+    }
+  },
+  "transitions": [
+    {
+      "from": "history_physical",
+      "to": ["labs_basic", "microbiology", "imaging_plain", "imaging_ultrasound"],
+      "conditions": "Use when test is likely to discriminate top diagnoses or change management; prefer labs_basic/microbiology; use imaging_plain/ultrasound only if strongly indicated by symptoms/exam."
+    },
+    {
+      "from": "labs_basic",
+      "to": ["imaging_plain", "microbiology", "imaging_ultrasound"],
+      "conditions": "Escalate if labs suggest a focal process or remain inconclusive and imaging is likely to clarify next step."
+    },
+    {
+      "from": "imaging_plain",
+      "to": ["imaging_ultrasound", "imaging_ct"],
+      "conditions": "Escalate if X-Ray is non-diagnostic but imaging will change management; consider ultrasound before CT where applicable."
+    },
+    {
+      "from": "imaging_ultrasound",
+      "to": ["imaging_ct"],
+      "conditions": "If ultrasound is non-diagnostic or discordant and CT is expected to change management."
+    },
+    {
+      "from": "imaging_ct",
+      "to": ["imaging_mri"],
+      "conditions": "Only when MRI detail will change management (e.g., neuro/soft tissue) or CT is non-diagnostic."
+    },
+    {
+      "from": "cardiology",
+      "to": ["imaging_plain", "imaging_ct", "imaging_mri"],
+      "conditions": "EKG±Troponin first; Echo if indicated; escalate to CT/MRI only for specific high-risk scenarios."
+    }
+  ],
+  "synonyms": {
+    "cXR": "Chest X-Ray",
+    "chest xray": "Chest X-Ray",
+    "xray": "X-Ray",
+    "us": "Ultrasound",
+    "ruq us": "Ultrasound RUQ",
+    "kub": "Abdominal X-Ray (KUB)",
+    "ekg": "ECG / EKG",
+    "echo": "Echocardiogram (TTE)",
+    "ct head": "CT Head (non-contrast)",
+    "ct a/p": "CT Abdomen/Pelvis (contrast)"
+  }
+}
+
