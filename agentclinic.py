@@ -454,7 +454,7 @@ def compare_results(diagnosis, correct_diagnosis, moderator_llm):
 # Main entry with config
 # =========================
 
-def main(config_path: str, llm_config_path: str, workers: int = 1):
+def main(config_path: str, llm_config_path: str, workers: Optional[int] = None):
     # Load main (run + datasets) configuration
     with open(config_path, "r", encoding="utf-8") as f:
         main_cfg = json.load(f)
@@ -477,7 +477,7 @@ def main(config_path: str, llm_config_path: str, workers: int = 1):
         }
     }
 
-    # Run settings
+    # Run settings (including workers which can come from config if CLI not set)
     run_cfg = cfg.get("run", {})
     inf_type = run_cfg.get("inf_type", "llm")
     doctor_bias = run_cfg.get("doctor_bias", "None")
@@ -492,6 +492,9 @@ def main(config_path: str, llm_config_path: str, workers: int = 1):
     img_request = bool(run_cfg.get("doctor_image_request", False))
     num_scenarios = run_cfg.get("num_scenarios", None)
     total_inferences = int(run_cfg.get("total_inferences", 20))
+    # Determine workers precedence: CLI arg (if not None) overrides config; else fallback to config or 1
+    cfg_workers = int(run_cfg.get("workers", 1))
+    effective_workers = int(workers) if workers is not None else cfg_workers
 
     # Initialize runs output directory and artifacts
     output_root = run_cfg.get("output_dir", "runs")
@@ -681,11 +684,11 @@ def main(config_path: str, llm_config_path: str, workers: int = 1):
 
     scenario_range = list(range(0, min(num_scenarios, scenario_loader.num_scenarios)))
     total_presents = len(scenario_range)
-    if workers <= 1 or inf_type.startswith("human_"):
+    if effective_workers <= 1 or inf_type.startswith("human_"):
         for sid in scenario_range:
             run_scenario(sid)
     else:
-        with ThreadPoolExecutor(max_workers=workers) as executor:
+        with ThreadPoolExecutor(max_workers=effective_workers) as executor:
             futures = {executor.submit(run_scenario, sid): sid for sid in scenario_range}
             for fut in as_completed(futures):
                 _ = futures[fut]
@@ -724,7 +727,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Medical Diagnosis Simulation')
     parser.add_argument('--config', type=str, default='agentclinic.config.json', help='Path to main configuration JSON file (run + datasets)')
     parser.add_argument('--llm-config', type=str, default='llm.config.json', help='Path to LLM configuration JSON file (openai + llm)')
-    parser.add_argument('--workers', type=int, default=1, help='Number of parallel scenario workers (ignored for human_* modes)')
+    parser.add_argument('--workers', type=int, default=None, help='Number of parallel scenario workers (ignored for human_* modes). Overrides config run.workers when provided.')
     args = parser.parse_args()
 
     main(args.config, args.llm_config, args.workers)

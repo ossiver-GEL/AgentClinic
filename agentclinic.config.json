@@ -12,7 +12,8 @@
     "dataset": "MedQA_Ext",
     "doctor_image_request": false,
     "num_scenarios": 20,
-    "total_inferences": 20
+    "total_inferences": 20,
+    "workers": 200
   },
   "datasets": {
     "MedQA": "processed_data/agentclinic_medqa.jsonl",

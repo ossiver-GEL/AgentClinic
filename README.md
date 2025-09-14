@@ -39,6 +39,23 @@ All of the models from the paper are available (GPT-4/4o/3.5, Mixtral-8x7B, Llam
 
 Just change modify the following parameters in the CLI
 
+### Parallel workers
+
+AgentClinic can execute multiple scenarios in parallel. You can now set the default number of parallel workers in the configuration file (`agentclinic.config.json`) under the `run.workers` field:
+
+```json
+{
+  "run": {
+    "workers": 4,
+    "dataset": "MedQA_Ext",
+    "total_inferences": 20
+    // ... other fields ...
+  }
+}
+```
+
+CLI precedence: passing `--workers N` on the command line overrides the value in the config. If you omit `--workers`, the config value is used (default 1). Human interaction modes (`human_doctor`, `human_patient`) always run single-threaded regardless of the workers setting.
+
 ```
 parser.add_argument('--openai_api_key', type=str, required=True, help='OpenAI API Key')
 parser.add_argument('--replicate_api_key', type=str, required=False, help='Replicate API Key')
@@ -53,6 +70,7 @@ parser.add_argument('--num_scenarios', type=int, default=1, required=False, help
 parser.add_argument('--agent_dataset', type=str, default='MedQA')
 parser.add_argument('--doctor_image_request', type=bool, default=False)
 parser.add_argument('--total_inferences', type=int, default=20, required=False, help='Number of inferences between patient and doctor')
+parser.add_argument('--workers', type=int, default=None, help='Number of parallel scenario workers (overrides config run.workers)')
 ```
 
 
