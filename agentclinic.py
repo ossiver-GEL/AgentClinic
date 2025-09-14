@@ -6,6 +6,7 @@ from typing import Optional
 from datetime import datetime
 
 from llm import init_openai_client, get_openai_client, query_model, set_llm_config, load_llm_config
+import json as _json_mod
 
 
 # Prompt loading with caching
@@ -379,6 +380,68 @@ class MeasurementAgent:
         self.information = self.scenario.exam_information()
 
 
+class CostEstimatorAgent:
+    def __init__(self, scenario, backend_str="gpt-4o-mini") -> None:
+        self.agent_hist = ""
+        self.backend = backend_str
+        self.scenario = scenario
+        self.pipe = None
+        self.reset()
+
+    def inference_cost(self, question: str, resource_level: str = "normal") -> str:
+        prompts = load_prompts_json("measurement_cost")
+        user_prompt = prompts["user_prompt_template"].format(
+            agent_hist=self.agent_hist,
+            question=question,
+            resource_level=resource_level,
+            scenario_info=self.information,
+        )
+        answer = query_model(self.backend, user_prompt, self.system_prompt())
+        self.agent_hist += question + "\n\n" + answer + "\n\n"
+        return answer
+
+    def system_prompt(self) -> str:
+        prompts = load_prompts_json("measurement_cost")
+        base = prompts["system_base"]
+        presentation = prompts.get("system_presentation_suffix", "").format(self.information)
+        return base + presentation
+
+    def add_hist(self, hist_str) -> None:
+        self.agent_hist += hist_str + "\n\n"
+
+    def reset(self) -> None:
+        self.agent_hist = ""
+        self.information = self.scenario.exam_information()
+
+
+def _extract_requested_test(dialogue: str) -> str:
+    try:
+        m = re.search(r"REQUEST\s+TEST\s*:\s*([^\n\r]+)", dialogue, flags=re.IGNORECASE)
+        return m.group(1).strip() if m else ""
+    except Exception:
+        return ""
+
+
+def _safe_parse_json(text: str):
+    try:
+        return _json_mod.loads(text)
+    except Exception:
+        pass
+    try:
+        start = text.find("{"); end = text.rfind("}")
+        if start != -1 and end != -1 and end > start:
+            return _json_mod.loads(text[start:end+1])
+    except Exception:
+        pass
+    try:
+        start = text.find("["); end = text.rfind("]")
+        if start != -1 and end != -1 and end > start:
+            return _json_mod.loads(text[start:end+1])
+    except Exception:
+        pass
+    return None
+
+
 def compare_results(diagnosis, correct_diagnosis, moderator_llm):
     prompts = load_prompts_json("moderator")
     user_prompt = prompts["user_prompt_template"].format(correct=correct_diagnosis, diag=diagnosis)
@@ -423,6 +486,8 @@ def main(config_path: str, llm_config_path: str, workers: int = 1):
     patient_llm = run_cfg.get("patient_llm", "gpt-4o-mini")
     measurement_llm = run_cfg.get("measurement_llm", "gpt-4o-mini")
     moderator_llm = run_cfg.get("moderator_llm", "gpt-4o-mini")
+    measurement_cost_llm = run_cfg.get("measurement_cost_llm", measurement_llm)
+    resource_level = run_cfg.get("resource_level", "normal")
     dataset = run_cfg.get("dataset", "MedQA")  # MedQA, MedQA_Ext, MIMICIV, NEJM, NEJM_Ext
     img_request = bool(run_cfg.get("doctor_image_request", False))
     num_scenarios = run_cfg.get("num_scenarios", None)
@@ -462,6 +527,9 @@ def main(config_path: str, llm_config_path: str, workers: int = 1):
 
     total_correct = 0
     total_presents = 0
+    # Aggregates for test economics across the entire run
+    total_tests_agg = 0
+    total_cost_agg_usd = 0.0
 
     if num_scenarios is None:
         num_scenarios = scenario_loader.num_scenarios
@@ -470,14 +538,19 @@ def main(config_path: str, llm_config_path: str, workers: int = 1):
     lock = threading.Lock()
 
     def run_scenario(scenario_id: int):
-        nonlocal total_correct
+        nonlocal total_correct, total_tests_agg, total_cost_agg_usd
         scenario = scenario_loader.get_scenario(id=scenario_id)
         meas_agent = MeasurementAgent(scenario=scenario, backend_str=measurement_llm)
         patient_agent = PatientAgent(scenario=scenario, bias_present=patient_bias, backend_str=patient_llm)
         doctor_agent = DoctorAgent(scenario=scenario, bias_present=doctor_bias, backend_str=doctor_llm, max_infs=total_inferences, img_request=img_request)
+        cost_agent = CostEstimatorAgent(scenario=scenario, backend_str=measurement_cost_llm)
         pi_dialogue = ""
         doctor_dialogue = ""
         diagnosed = False
+        test_economics_log = []
+        scenario_cost_total = 0.0
+        scenario_wait_total_min = 0.0
+        scenario_duration_total_min = 0.0
         for _inf_id in range(total_inferences):
             if dataset == "NEJM":
                 imgs = ("REQUEST IMAGES" in doctor_dialogue) if img_request else True
@@ -513,6 +586,13 @@ def main(config_path: str, llm_config_path: str, workers: int = 1):
                     "measurement_hist": meas_agent.agent_hist,
                     "llm_responses_config": responses_cfg,
                     "llm_runtime_config": runtime_cfg,
+                    "resource_level": resource_level,
+                    "test_economics_log": test_economics_log,
+                    "test_economics_totals": {
+                        "total_estimated_cost_usd": scenario_cost_total,
+                        "total_expected_wait_time_minutes": scenario_wait_total_min,
+                        "total_expected_duration_minutes": scenario_duration_total_min,
+                    },
                 }
                 with lock:
                     with open(scenario_jsonl_path, "a", encoding="utf-8") as f_out:
@@ -522,6 +602,44 @@ def main(config_path: str, llm_config_path: str, workers: int = 1):
             if "REQUEST TEST" in doctor_dialogue:
                 pi_dialogue = meas_agent.inference_measurement(doctor_dialogue)
                 patient_agent.add_hist(pi_dialogue)
+                # Estimate cost/time for requested test (non-blocking best-effort)
+                try:
+                    req_name = _extract_requested_test(doctor_dialogue)
+                    cost_resp = cost_agent.inference_cost(doctor_dialogue, resource_level=resource_level)
+                    payload = _safe_parse_json(cost_resp) or {}
+                    entries = []
+                    if isinstance(payload, dict) and isinstance(payload.get("tests"), list):
+                        entries = payload["tests"]
+                    elif isinstance(payload, list):
+                        entries = payload
+                    for ent in entries:
+                        try:
+                            name = ent.get("test_name") or req_name
+                            curr = ent.get("estimate_currency") or "USD"
+                            cost = float(ent.get("estimate_cost") or 0)
+                            wait_min = float(ent.get("expected_wait_time_minutes") or 0)
+                            dur_min = float(ent.get("expected_duration_minutes") or 0)
+                            assumptions = ent.get("assumptions") or ""
+                            test_economics_log.append({
+                                "test_name": name,
+                                "estimate_currency": curr,
+                                "estimate_cost": cost,
+                                "expected_wait_time_minutes": wait_min,
+                                "expected_duration_minutes": dur_min,
+                                "assumptions": assumptions,
+                                "resource_level": resource_level,
+                            })
+                            scenario_cost_total += cost
+                            scenario_wait_total_min += wait_min
+                            scenario_duration_total_min += dur_min
+                            with lock:
+                                total_tests_agg += 1
+                                if curr == "USD":
+                                    total_cost_agg_usd += cost
+                        except Exception:
+                            continue
+                except Exception:
+                    pass
             else:
                 if inf_type == "human_patient":
                     pi_dialogue = input(f"\n[Scene {scenario_id}] Response to doctor: ")
@@ -549,6 +667,13 @@ def main(config_path: str, llm_config_path: str, workers: int = 1):
                 "measurement_hist": meas_agent.agent_hist,
                 "llm_responses_config": responses_cfg,
                 "llm_runtime_config": runtime_cfg,
+                "resource_level": resource_level,
+                "test_economics_log": test_economics_log,
+                "test_economics_totals": {
+                    "total_estimated_cost_usd": scenario_cost_total,
+                    "total_expected_wait_time_minutes": scenario_wait_total_min,
+                    "total_expected_duration_minutes": scenario_duration_total_min,
+                },
             }
             with lock:
                 with open(scenario_jsonl_path, "a", encoding="utf-8") as f_out:
@@ -585,6 +710,9 @@ def main(config_path: str, llm_config_path: str, workers: int = 1):
             "scenario_file": os.path.basename(scenario_jsonl_path),
             "llm_responses_config": responses_cfg,
             "llm_runtime_config": runtime_cfg,
+            "resource_level": resource_level,
+            "total_tests": total_tests_agg,
+            "total_estimated_cost_usd": total_cost_agg_usd,
         }
         with open(os.path.join(out_dir, "summary.json"), "w", encoding="utf-8") as f_out:
             json.dump(summary, f_out, ensure_ascii=False, indent=2)

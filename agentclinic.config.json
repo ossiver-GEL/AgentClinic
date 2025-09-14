@@ -6,10 +6,12 @@
     "doctor_llm": "gpt-4o-mini",
     "patient_llm": "gpt-4o-mini",
     "measurement_llm": "gpt-4o-mini",
+    "measurement_cost_llm": "gpt-4o-mini",
     "moderator_llm": "gpt-4o-mini",
+    "resource_level": "normal",
     "dataset": "MedQA_Ext",
     "doctor_image_request": false,
-    "num_scenarios": 200,
+    "num_scenarios": 20,
     "total_inferences": 20
   },
   "datasets": {
