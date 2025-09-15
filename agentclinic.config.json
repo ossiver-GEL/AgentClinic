@@ -11,7 +11,7 @@
     "resource_level": "normal",
     "dataset": "MedQA_Ext",
     "doctor_image_request": false,
-    "num_scenarios": 200,
+    "num_scenarios": 20,
     "total_inferences": 20,
     "workers": 200,
     "doctor_test_policy_enabled": true,
