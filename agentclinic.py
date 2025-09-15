@@ -33,14 +33,18 @@ def _build_policy_guidance_for_prompt(policy: dict) -> str:
         parts.append(f"Instructions: {instr}")
     # Constraints summary
     cons = policy.get("constraints") or {}
+    # Confidence threshold (default 0.7 if absent/invalid)
+    thr_val = cons.get("finish_early_if_confident")
+    if not isinstance(thr_val, (int, float)):
+        thr_val = 0.7
     if cons:
         human_cons = []
         if cons.get("one_test_per_turn"): human_cons.append("one test per turn")
         if cons.get("prefer_low_cost_first"): human_cons.append("prefer low-cost first")
         if cons.get("avoid_back_to_back_imaging"): human_cons.append("avoid back-to-back imaging")
         if cons.get("allow_override_for_red_flags"): human_cons.append("allow override for red flags")
-        thr = cons.get("finish_early_if_confident")
-        if isinstance(thr, (int, float)): human_cons.append(f"finish early if ≥{thr:.0%} confident")
+        if thr_val is not None:
+            human_cons.append(f"finish early if ≥{thr_val:.0%} confident")
         if human_cons:
             parts.append("Constraints: " + ", ".join(human_cons))
     # Categories (names + a few examples)
@@ -78,8 +82,13 @@ def _build_policy_guidance_for_prompt(policy: dict) -> str:
                 t_summ.append(seg)
         if t_summ:
             parts.append("Transitions: " + "; ".join(t_summ))
-    # Final behavioral rules to make it explicit
-    parts.append("Behavior: plan internally first, then act; if ≥70% confident, output DIAGNOSIS READY; otherwise ask ONE short question or request ONE low-cost, high-yield test consistent with transitions; escalate only if results will change management or red flags present.")
+    # Final behavioral rules to make it explicit (use configured threshold)
+    parts.append(
+        "Behavior: plan internally first, then act; "
+        f"if ≥{thr_val:.0%} confident, output DIAGNOSIS READY; "
+        "otherwise ask ONE short question or request ONE low-cost, high-yield test consistent with transitions; "
+        "escalate only if results will change management or red flags present."
+    )
     return "\n".join(parts)
 
 class ScenarioMedQA:
@@ -661,7 +670,8 @@ def main(config_path: str, llm_config_path: str, workers: Optional[int] = None):
         scenario_duration_total_min = 0.0
         for _inf_id in range(total_inferences):
             if dataset == "NEJM":
-                imgs = ("REQUEST IMAGES" in doctor_dialogue) if img_request else True
+                # Only provide images when image requests are enabled and explicitly requested
+                imgs = ("REQUEST IMAGES" in doctor_dialogue) if img_request else False
             else:
                 imgs = False
             if _inf_id == total_inferences - 1:
