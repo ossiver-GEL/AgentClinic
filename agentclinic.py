@@ -9,6 +9,9 @@ from llm import init_openai_client, get_openai_client, query_model, set_llm_conf
 import json as _json_mod
 
 
+from policy_engine import DifferentialDiagnosisEngine
+
+
 # Prompt loading with caching
 PROMPT_CACHE = {}
 
@@ -377,6 +380,29 @@ class DoctorAgent:
         # Prompt-only test policy integration (A/B switch)
         self.use_test_policy = bool(use_test_policy)
         self.test_policy = test_policy if isinstance(test_policy, dict) else None
+        self.policy_engine = None
+        if self.use_test_policy and self.test_policy:
+            constraints = (self.test_policy.get("constraints") or {})
+            thr_val = constraints.get("finish_early_if_confident")
+            finish_threshold = float(thr_val) if isinstance(thr_val, (int, float)) else 0.7
+            try:
+                patient_overview = self.scenario.patient_information()
+            except Exception:
+                patient_overview = ""
+            if isinstance(patient_overview, (dict, list)):
+                try:
+                    patient_overview_str = json.dumps(patient_overview, ensure_ascii=False)
+                except Exception:
+                    patient_overview_str = str(patient_overview)
+            else:
+                patient_overview_str = str(patient_overview)
+            self.policy_engine = DifferentialDiagnosisEngine(
+                llm_model=self.backend,
+                policy=self.test_policy,
+                finish_threshold=finish_threshold,
+                case_overview=self.presentation,
+                patient_overview=patient_overview_str,
+            )
 
     def generate_bias(self) -> str:
         """ 
@@ -394,12 +420,51 @@ class DoctorAgent:
             return ""
 
     def inference_doctor(self, question, image_requested=False) -> str:
-        answer = str()
-        if self.infs >= self.MAX_INFS: return "Maximum inferences reached"
+        if self.infs >= self.MAX_INFS:
+            return "Maximum inferences reached"
         prompts = load_prompts_json("doctor")
-        user_prompt = prompts["user_prompt_template"].format(agent_hist=self.agent_hist, question=question)
-        answer = query_model(self.backend, user_prompt, self.system_prompt(), image_requested=image_requested, scene=self.scenario)
-        self.agent_hist += question + "\n\n" + answer + "\n\n"
+        turn_input = "" if question is None else str(question)
+        planning_block = ""
+        decision = None
+        if self.policy_engine:
+            decision = self.policy_engine.analyze(self.agent_hist, turn_input)
+            if decision.should_finish and decision.chosen_diagnosis:
+                if self.agent_hist.strip():
+                    answer = f"DIAGNOSIS READY: {decision.chosen_diagnosis}"
+                    self.agent_hist += turn_input + "\n\n" + answer + "\n\n"
+                    self.infs += 1
+                    return answer
+                decision.should_finish = False
+                decision.action_summary = (
+                    "Begin with an open-ended history question before committing to a diagnosis."
+                )
+            guidance = self.policy_engine.render_guidance(decision)
+            if guidance:
+                planning_block = "[Planning Notes]\n" + guidance + "\n[/Planning Notes]\n"
+        template = prompts["user_prompt_template"]
+        format_payload = {
+            "agent_hist": self.agent_hist,
+            "question": turn_input,
+            "planning_notes": planning_block,
+        }
+        try:
+            user_prompt = template.format(**format_payload)
+        except (KeyError, IndexError):
+            try:
+                user_prompt = template.format(agent_hist=self.agent_hist, question=turn_input)
+            except Exception:
+                user_prompt = template.format(self.agent_hist, turn_input)
+            if planning_block:
+                block = planning_block if planning_block.endswith("\n") else planning_block + "\n"
+                user_prompt = block + user_prompt
+        answer = query_model(
+            self.backend,
+            user_prompt,
+            self.system_prompt(),
+            image_requested=image_requested,
+            scene=self.scenario,
+        )
+        self.agent_hist += turn_input + "\n\n" + answer + "\n\n"
         self.infs += 1
         return answer
 

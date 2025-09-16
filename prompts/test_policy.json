@@ -1,15 +1,20 @@
 {
-  "instructions": "Plan tests from cheap, high-yield to expensive, specialized. Start with history/physical; only request a test if its result can change management or meaningfully reduce diagnostic uncertainty. If you are already ≥70% confident about the top diagnosis, output DIAGNOSIS READY instead of requesting more tests. At most one test per turn. Avoid back-to-back imaging unless new information justifies it. You may override and escalate for red-flag features (e.g., focal neurological deficit, acute abdomen, hemodynamic instability).",
+  "instructions": "Plan tests from low-cost, high-yield options toward more invasive studies. Maintain a weighted differential diagnosis each turn: list several plausible diseases, track key findings with diagnostic weights, and update confidences by treating supportive evidence as +weight, contradictions as -weight, and unknown findings as 0. Each disease should surface at least the configured minimum number of distinguishing findings; if evidence is not yet collected, include predicted findings and mark their observation as unknown so the planner knows to investigate. Only finish early when the top disease exceeds finish_early_if_confident and no close competitor remains. When confidences cluster together, focus on clarifying discriminating symptoms or tests before escalation.",
   "constraints": {
     "one_test_per_turn": true,
     "prefer_low_cost_first": true,
     "avoid_back_to_back_imaging": true,
     "allow_override_for_red_flags": true,
-    "finish_early_if_confident": 0.7
+    "finish_early_if_confident": 0.8
+  },
+  "differential_settings": {
+    "min_symptoms_per_disease": 4,
+    "max_differentials": 5,
+    "confidence_close_threshold": 0.12
   },
   "categories": {
     "labs_basic": {
-      "description": "Low-cost labs; broad screening and triage.",
+      "description": "Low-cost labs for broad screening and triage.",
       "typical_tests": [
         "Complete Blood Count (CBC)",
         "Basic/Comprehensive Metabolic Panel (BMP/CMP)",
@@ -23,7 +28,7 @@
       "cost_level": "low"
     },
     "microbiology": {
-      "description": "Rapid/inexpensive pathogen screens and cultures.",
+      "description": "Rapid or inexpensive pathogen screens and cultures.",
       "typical_tests": [
         "Urinalysis",
         "Urine Culture",
@@ -35,7 +40,7 @@
       "cost_level": "low"
     },
     "imaging_plain": {
-      "description": "Plain radiographs; first-line for many MSK and chest complaints.",
+      "description": "Plain radiographs as first-line for many musculoskeletal and chest complaints.",
       "typical_tests": [
         "Chest X-Ray",
         "Abdominal X-Ray (KUB)",
@@ -44,7 +49,7 @@
       "cost_level": "low"
     },
     "imaging_ultrasound": {
-      "description": "Ultrasound; abdominal/RUQ/pelvic first-line and no radiation.",
+      "description": "Ultrasound for abdominal, RUQ, and pelvic complaints with no radiation.",
       "typical_tests": [
         "Ultrasound Abdomen",
         "Ultrasound RUQ",
@@ -53,7 +58,7 @@
       "cost_level": "low_to_medium"
     },
     "imaging_ct": {
-      "description": "CT; higher cost/radiation; use if US/X-ray non-diagnostic or red flags.",
+      "description": "CT for higher cost or radiation scenarios; use after ultrasound or X-ray when escalation is justified.",
       "typical_tests": [
         "CT Head (non-contrast)",
         "CT Abdomen/Pelvis (contrast)",
@@ -62,7 +67,7 @@
       "cost_level": "medium_to_high"
     },
     "imaging_mri": {
-      "description": "MRI; highest cost; soft tissue/CNS detail; use when results will change management.",
+      "description": "MRI for highest cost, soft tissue, or CNS detail when results will change management.",
       "typical_tests": [
         "MRI Brain",
         "MRI Spine",
@@ -80,7 +85,7 @@
       "cost_level": "mixed"
     },
     "neuro_functional": {
-      "description": "Functional neuro tests.",
+      "description": "Functional neurologic testing.",
       "typical_tests": [
         "EEG"
       ],
@@ -96,7 +101,7 @@
         "imaging_plain",
         "imaging_ultrasound"
       ],
-      "conditions": "Use when test is likely to discriminate top diagnoses or change management; prefer labs_basic/microbiology; use imaging_plain/ultrasound only if strongly indicated by symptoms/exam."
+      "conditions": "Request a test only when it can discriminate top diagnoses or change management. Prefer labs_basic or microbiology first; use imaging_plain or ultrasound only when red flags or focused findings justify it."
     },
     {
       "from": "labs_basic",
@@ -105,7 +110,7 @@
         "microbiology",
         "imaging_ultrasound"
       ],
-      "conditions": "Escalate if labs suggest a focal process or remain inconclusive and imaging is likely to clarify next step."
+      "conditions": "Escalate if labs suggest a focal process or remain inconclusive and imaging will clarify the next management step."
     },
     {
       "from": "imaging_plain",
@@ -113,21 +118,21 @@
         "imaging_ultrasound",
         "imaging_ct"
       ],
-      "conditions": "Escalate if X-Ray is non-diagnostic but imaging will change management; consider ultrasound before CT where applicable."
+      "conditions": "Move to higher resolution imaging when plain films are non-diagnostic yet clinical suspicion stays high."
     },
     {
       "from": "imaging_ultrasound",
       "to": [
         "imaging_ct"
       ],
-      "conditions": "If ultrasound is non-diagnostic or discordant and CT is expected to change management."
+      "conditions": "Use CT if ultrasound is non-diagnostic or discordant and results would change management."
     },
     {
       "from": "imaging_ct",
       "to": [
         "imaging_mri"
       ],
-      "conditions": "Only when MRI detail will change management (e.g., neuro/soft tissue) or CT is non-diagnostic."
+      "conditions": "Consider MRI only when additional soft-tissue detail will change management or CT remains non-diagnostic."
     },
     {
       "from": "cardiology",
@@ -136,7 +141,7 @@
         "imaging_ct",
         "imaging_mri"
       ],
-      "conditions": "EKG±Troponin first; Echo if indicated; escalate to CT/MRI only for specific high-risk scenarios."
+      "conditions": "Obtain ECG and troponin first; use echocardiogram when indicated. Escalate to CT or MRI only for high-risk scenarios."
     }
   ],
   "synonyms": {
