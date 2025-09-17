@@ -3,7 +3,7 @@
     "inf_type": "llm",
     "doctor_bias": "None",
     "patient_bias": "None",
-    "doctor_llm": "gpt-5-mini",
+    "doctor_llm": "gpt-5",
     "patient_llm": "gpt-5-mini",
     "measurement_llm": "gpt-5-mini",
     "measurement_cost_llm": "gpt-5-mini",

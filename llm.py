@@ -24,7 +24,6 @@ def load_llm_config(path: str = "llm.config.json") -> dict:
 
         Parameters:
             path: Path to llm.config.json.
-            required: If True, raise FileNotFoundError when missing; else return {}.
 
         Returns:
             A dictionary: { 'openai': {...}, 'llm': {...} }
@@ -156,6 +155,8 @@ def query_model(
                 pass
             resp = client_req.responses.create(**kwargs)
 
+            #print("Raw response:", resp)
+
             # Prefer high-level helper, then fallback to manual parse if empty
             answer = getattr(resp, "output_text", None) or ""
             if not answer:
@@ -186,3 +187,24 @@ def query_model(
             time.sleep(retry_delay)
             continue
     raise Exception("Max retries: timeout")
+
+if __name__ == "__main__":
+    # Simple test
+    cfg = load_llm_config(path="localllm.config.json")
+    print("LLM config loaded:", cfg)
+    test_prompt = "List 3 typical symptoms of a cold."
+    test_system = "You are a medical expert."
+    response = query_model("Llama3-OpenBioLLM-8B", test_prompt, test_system)
+    print("Response:", response)
+
+'''
+source .venvs/vllm/bin/activate
+'''
+
+'''
+vllm serve openbiollm8b   --chat-template ~/llama3_chat_template.jinja   --dtype auto   --quantization bitsandbytes   --max-model-len 8192   --gpu-memory-utilization 0.90   --swap-space 8   --api-key sk-local-anything --enforce-eager
+'''
+
+'''
+litellm --config litellm.config.yaml --host 0.0.0.0 --port 4000
+'''

@@ -4,3 +4,7 @@ argparse
 datasets
 rich
 tqdm
+transformers
+torch
+accelerate
+vllm
