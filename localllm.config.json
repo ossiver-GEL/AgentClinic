@@ -1,23 +1,20 @@
 {
     "openai": {
-        "api_key": "sk-piggFmUfUN7BcfdpxlxKqpGNkcEXic55xCUTPKK27RcbWB2x",
-        "base_url": "http://localhost:8080/v1"
+        "api_key": "sk-local-anything",
+        "base_url": "http://127.0.0.1:8000/v1"
     },
     "llm": {
         "responses": {
             "max_output_tokens": 2048,
-            "reasoning": {
-                "effort": "minimal"
-            },
-            "text": {
-                "verbosity": "low"
-            }
+            "temperature": 0.2,
+            "top_p": 0.95
         },
         "runtime": {
-            "tries": 30,
+            "tries": 5,
             "timeout": 2.0,
             "clip_prompt": false,
-            "max_prompt_len": 16384
+            "max_prompt_len": 16384,
+            "llm_api": "chat"
         }
     }
 }
