@@ -621,8 +621,8 @@ def main(config_path: str, llm_config_path: str, workers: Optional[int] = None):
     with open(config_path, "r", encoding="utf-8") as f:
         main_cfg = json.load(f)
 
-    # Load & apply LLM configuration centrally (honor --llm-config override)
-    llm_file_cfg = load_llm_config(path=llm_config_path)
+    # Load & apply LLM configuration centrally
+    llm_file_cfg = load_llm_config()
     openai_cfg = llm_file_cfg.get("openai", {})
     llm_cfg = llm_file_cfg.get("llm", {})
     responses_cfg = llm_cfg.get("responses")
