@@ -1,5 +1,5 @@
 from llm import query_model
-from agent_tools import load_prompts_json
+from agents.agent_tools import load_prompts_json
 
 def compare_results(diagnosis, correct_diagnosis, moderator_llm):
     prompts = load_prompts_json("moderator")

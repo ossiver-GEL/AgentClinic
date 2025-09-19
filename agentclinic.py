@@ -7,11 +7,13 @@ from datetime import datetime
 
 from agents.cost_estimator_agent.cost_estimator_agent import CostEstimatorAgent
 from agents.doctor_agent.doctor_agent import DoctorAgent
+from agents.enh_doctor_agent.enh_doctor_agent import EnhancedDoctorAgent
 from agents.meas_agent.measurement_agent import MeasurementAgent
 from agents.moderator_agent.moderator_agent import compare_results
 from agents.patient_agent.patient_agent import PatientAgent
 from llm import init_openai_client, get_openai_client, query_model, set_llm_config, load_llm_config
 import json as _json_mod
+from tqdm import tqdm
 
 
 class ScenarioMedQA:
@@ -294,6 +296,8 @@ def main(config_path: str, llm_config_path: str, workers: Optional[int] = None):
     cfg_workers = int(run_cfg.get("workers", 1))
     effective_workers = int(workers) if workers is not None else cfg_workers
 
+    use_enh = bool(run_cfg.get("use_enh", False))
+
     # Initialize runs output directory and artifacts
     output_root = run_cfg.get("output_dir", "runs")
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -326,6 +330,17 @@ def main(config_path: str, llm_config_path: str, workers: Optional[int] = None):
     else:
         raise Exception("Dataset {} does not exist".format(str(dataset)))
 
+    # Basic run info prints
+    scenario_count = min(num_scenarios if num_scenarios is not None else scenario_loader.num_scenarios,
+                         scenario_loader.num_scenarios)
+    print(
+        f"Starting AgentClinic run: dataset={dataset}, scenarios={scenario_count}, "
+        f"workers={effective_workers}, mode={inf_type}"
+    )
+    print(f"Output directory: {out_dir}")
+    if ds_file:
+        print(f"Dataset file: {ds_file}")
+
     total_correct = 0
     total_presents = 0
     # Aggregates for test economics across the entire run
@@ -343,7 +358,13 @@ def main(config_path: str, llm_config_path: str, workers: Optional[int] = None):
         scenario = scenario_loader.get_scenario(id=scenario_id)
         meas_agent = MeasurementAgent(scenario=scenario, backend_str=measurement_llm)
         patient_agent = PatientAgent(scenario=scenario, bias_present=patient_bias, backend_str=patient_llm)
-        doctor_agent = DoctorAgent(scenario=scenario, bias_present=doctor_bias, backend_str=doctor_llm, max_infs=total_inferences, img_request=img_request)
+
+        if use_enh:
+            doctor_agent = EnhancedDoctorAgent(scenario=scenario, bias_present=doctor_bias, backend_str=doctor_llm, max_infs=total_inferences, img_request=img_request)
+        else:
+            doctor_agent = DoctorAgent(scenario=scenario, bias_present=doctor_bias, backend_str=doctor_llm, max_infs=total_inferences, img_request=img_request)
+
+
         cost_agent = CostEstimatorAgent(scenario=scenario, backend_str=measurement_cost_llm)
         pi_dialogue = ""
         doctor_dialogue = ""
@@ -480,16 +501,21 @@ def main(config_path: str, llm_config_path: str, workers: Optional[int] = None):
                 with open(scenario_jsonl_path, "a", encoding="utf-8") as f_out:
                     f_out.write(json.dumps(record, ensure_ascii=False) + "\n")
 
-    scenario_range = list(range(0, min(num_scenarios, scenario_loader.num_scenarios)))
+    scenario_range = list(range(0, scenario_count))
     total_presents = len(scenario_range)
+    print(f"Running {total_presents} scenarios with workers={effective_workers} (mode={inf_type}) ...")
     if effective_workers <= 1 or inf_type.startswith("human_"):
-        for sid in scenario_range:
+        for sid in tqdm(scenario_range, desc="Scenarios", unit="scenario"):
             run_scenario(sid)
     else:
         with ThreadPoolExecutor(max_workers=effective_workers) as executor:
             futures = {executor.submit(run_scenario, sid): sid for sid in scenario_range}
-            for fut in as_completed(futures):
-                _ = futures[fut]
+            with tqdm(total=total_presents, desc="Scenarios", unit="scenario") as pbar:
+                for fut in as_completed(futures):
+                    sid_done = futures[fut]
+                    # Propagate exceptions if any
+                    fut.result()
+                    pbar.update(1)
 
     # Write summary of the run
     try:
@@ -517,6 +543,13 @@ def main(config_path: str, llm_config_path: str, workers: Optional[int] = None):
         }
         with open(os.path.join(out_dir, "summary.json"), "w", encoding="utf-8") as f_out:
             json.dump(summary, f_out, ensure_ascii=False, indent=2)
+        # Final progress prints
+        acc = summary["accuracy"]
+        acc_txt = f"{acc:.3f}" if isinstance(acc, (int, float)) and acc is not None else str(acc)
+        print(
+            f"Completed {summary['num_scenarios']} scenarios in {total_time:.1f}s. "
+            f"Accuracy={acc_txt}. Summary saved to: {os.path.join(out_dir, 'summary.json')}"
+        )
     except Exception as e:
         print("Warning: failed to write summary.json:", e)
 

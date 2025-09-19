@@ -1,7 +1,7 @@
 {
     "openai": {
-        "api_key": "sk-piggFmUfUN7BcfdpxlxKqpGNkcEXic55xCUTPKK27RcbWB2x",
-        "base_url": "https://api.bianxie.ai/v1"
+        "api_key": "sk-local-anything",
+        "base_url": "http://127.0.0.1:18000/v1"
     },
     "llm": {
         "responses": {
@@ -14,8 +14,10 @@
             }
         },
         "runtime": {
-            "tries": 30,
-            "timeout": 2.0,
+            "tries": 5,
+            "timeout": 10.0,
+            "request_timeout": 120.0,
+            "llm_api": "chat",
             "clip_prompt": false,
             "max_prompt_len": 16384
         }

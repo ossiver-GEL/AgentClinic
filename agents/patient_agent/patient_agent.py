@@ -1,5 +1,5 @@
 from llm import query_model
-from agent_tools import load_prompts_json
+from agents.agent_tools import load_prompts_json
 
 class PatientAgent:
     def __init__(self, scenario, backend_str="gpt-4o-mini", bias_present=None) -> None:

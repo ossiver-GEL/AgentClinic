@@ -2,7 +2,7 @@ from llm import query_model
 from agents.agent_tools import load_prompts_json
 
 
-class DoctorAgent:
+class EnhancedDoctorAgent:
     def __init__(self, scenario, backend_str="gpt-4o-mini", max_infs=20, bias_present=None, img_request=False) -> None:
         # number of inference calls to the doctor
         self.infs = 0
@@ -31,7 +31,7 @@ class DoctorAgent:
         """
         if self.bias_present is None:
             return ""
-        prompts = load_prompts_json("doctor").get("biases", {})
+        prompts = load_prompts_json("enh_doctor").get("biases", {})
         if self.bias_present in prompts:
             return prompts[self.bias_present]
         else:
@@ -41,7 +41,7 @@ class DoctorAgent:
     def inference_doctor(self, question, image_requested=False) -> str:
         answer = str()
         if self.infs >= self.MAX_INFS: return "Maximum inferences reached"
-        prompts = load_prompts_json("doctor")
+        prompts = load_prompts_json("enh_doctor")
         user_prompt = prompts["user_prompt_template"].format(agent_hist=self.agent_hist, question=question)
         answer = query_model(self.backend, user_prompt, self.system_prompt(), image_requested=image_requested, scene=self.scenario)
         self.agent_hist += question + "\n\n" + answer + "\n\n"
@@ -49,7 +49,7 @@ class DoctorAgent:
         return answer
 
     def system_prompt(self) -> str:
-        prompts = load_prompts_json("doctor")
+        prompts = load_prompts_json("enh_doctor")
         bias_prompt = ""
         if self.bias_present is not None:
             bias_prompt = self.generate_bias()
