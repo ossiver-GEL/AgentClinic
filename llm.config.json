@@ -1,25 +1,66 @@
 {
-    "openai": {
-        "api_key": "sk-local-anything",
-        "base_url": "http://127.0.0.1:18000/v1"
-    },
-    "llm": {
-        "responses": {
-            "max_output_tokens": 2048,
-            "reasoning": {
-                "effort": "minimal"
-            },
-            "text": {
-                "verbosity": "low"
+    "default_endpoint": "vllm",
+    "endpoints": {
+        "vllm": {
+            "base_url": "http://127.0.0.1:18000/v1",
+            "api_key": "sk-local-anything",
+            "llm": {
+                "responses": {
+                    "temperature": 0.2,
+                    "max_output_tokens": 400
+                },
+                "runtime": {
+                    "llm_api": "chat",
+                    "tries": 5,
+                    "retry_delay": 1.0,
+                    "timeout": 20.0,
+                    "request_timeout": 60.0,
+                    "clip_prompt": false,
+                    "max_prompt_len": 16384
+                }
             }
         },
-        "runtime": {
-            "tries": 5,
-            "timeout": 10.0,
-            "request_timeout": 120.0,
-            "llm_api": "chat",
-            "clip_prompt": false,
-            "max_prompt_len": 16384
+        "nvidia": {
+            "base_url": "https://integrate.api.nvidia.com/v1",
+            "api_key": "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",
+            "llm": {
+                "responses": {
+                    "temperature": 0.3,
+                    "max_output_tokens": 512
+                },
+                "runtime": {
+                    "llm_api": "chat",
+                    "tries": 3,
+                    "retry_delay": 1.0,
+                    "request_timeout": 120.0,
+                    "clip_prompt": false,
+                    "max_prompt_len": 16384
+                }
+            }
+        },
+        "bianxie": {
+            "base_url": "https://api.bianxie.ai/v1",
+            "api_key": "sk-piggFmUfUN7BcfdpxlxKqpGNkcEXic55xCUTPKK27RcbWB2x",
+            "llm": {
+                "responses": {
+                    "temperature": 0.3,
+                    "max_output_tokens": 512
+                },
+                "runtime": {
+                    "llm_api": "response",
+                    "tries": 3,
+                    "retry_delay": 1.0,
+                    "request_timeout": 120.0,
+                    "clip_prompt": false,
+                    "max_prompt_len": 16384
+                }
+            }
         }
+    },
+    "model_map": {
+        "openbiollm70b": "vllm",
+        "deepseek-ai/deepseek-v3.1": "nvidia",
+        "deepseek-ai/deepseek-r1": "nvidia",
+        "gpt-5-mini": "bianxie"
     }
 }
