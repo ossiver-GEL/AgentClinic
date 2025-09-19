@@ -11,7 +11,7 @@ from agents.enh_doctor_agent.enh_doctor_agent import EnhancedDoctorAgent
 from agents.meas_agent.measurement_agent import MeasurementAgent
 from agents.moderator_agent.moderator_agent import compare_results
 from agents.patient_agent.patient_agent import PatientAgent
-from llm import init_openai_client, get_openai_client, query_model, set_llm_config, load_llm_config
+from llm import load_llm_config
 import json as _json_mod
 from tqdm import tqdm
 
