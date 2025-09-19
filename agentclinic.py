@@ -5,23 +5,14 @@ import threading
 from typing import Optional
 from datetime import datetime
 
+from agents.cost_estimator_agent.cost_estimator_agent import CostEstimatorAgent
+from agents.doctor_agent.doctor_agent import DoctorAgent
+from agents.meas_agent.measurement_agent import MeasurementAgent
+from agents.moderator_agent.moderator_agent import compare_results
+from agents.patient_agent.patient_agent import PatientAgent
 from llm import init_openai_client, get_openai_client, query_model, set_llm_config, load_llm_config
 import json as _json_mod
 
-
-# Prompt loading with caching
-PROMPT_CACHE = {}
-
-def load_prompts_json(name: str) -> dict:
-    global PROMPT_CACHE
-    if name in PROMPT_CACHE:
-        return PROMPT_CACHE[name]
-    base_dir = os.path.join(os.path.dirname(__file__), "prompts")
-    path = os.path.join(base_dir, f"{name}.json")
-    with open(path, "r", encoding="utf-8") as f:
-        data = json.load(f)
-    PROMPT_CACHE[name] = data
-    return data
 
 class ScenarioMedQA:
     def __init__(self, scenario_dict) -> None:
@@ -227,192 +218,6 @@ class ScenarioLoaderNEJM:
         return self.scenarios[id]
 
 
-class PatientAgent:
-    def __init__(self, scenario, backend_str="gpt-4o-mini", bias_present=None) -> None:
-        # disease of patient, or "correct answer"
-        self.disease = ""
-        # symptoms that patient presents
-        self.symptoms = ""
-        # conversation history between doctor and patient
-        self.agent_hist = ""
-        # language model backend for patient agent
-        self.backend = backend_str
-        # presentation of any form of bias
-        self.bias_present = (None if bias_present == "None" else bias_present)
-        # sample initial question from dataset
-        self.scenario = scenario
-        self.reset()
-        self.pipe = None
-
-        self.biases = ["recency", "frequency", "false_consensus", "self_diagnosis", "gender", "race", "sexual_orientation", "cultural", "education", "religion", "socioeconomic"]
-
-    def generate_bias(self) -> str:
-        """ 
-        ================
-        Cognitive biases 
-        ================
-        """
-        if self.bias_present is None:
-            return ""
-        prompts = load_prompts_json("patient").get("biases", {})
-        if self.bias_present in prompts:
-            return prompts[self.bias_present]
-        else:
-            print("BIAS TYPE {} NOT SUPPORTED, ignoring bias...".format(self.bias_present))
-            return ""
-
-    def inference_patient(self, question) -> str:
-        prompts = load_prompts_json("patient")
-        user_prompt = prompts["user_prompt_template"].format(agent_hist=self.agent_hist, question=question)
-        answer = query_model(self.backend, user_prompt, self.system_prompt())
-        self.agent_hist += question + "\n\n" + answer + "\n\n"
-        return answer
-
-    def system_prompt(self) -> str:
-        prompts = load_prompts_json("patient")
-        bias_prompt = ""
-        if self.bias_present is not None:
-            bias_prompt = self.generate_bias()
-        base = prompts["system_base"]
-        symptoms = prompts["system_symptoms_suffix"].format(self.symptoms)
-        return base + bias_prompt + symptoms
-    
-    def reset(self) -> None:
-        self.agent_hist = ""
-        self.symptoms = self.scenario.patient_information()
-
-    def add_hist(self, hist_str) -> None:
-        self.agent_hist += hist_str + "\n\n"
-
-
-class DoctorAgent:
-    def __init__(self, scenario, backend_str="gpt-4o-mini", max_infs=20, bias_present=None, img_request=False) -> None:
-        # number of inference calls to the doctor
-        self.infs = 0
-        # maximum number of inference calls to the doctor
-        self.MAX_INFS = max_infs
-        # conversation history between doctor and patient
-        self.agent_hist = ""
-        # presentation information for doctor
-        self.presentation = ""
-        # language model backend for doctor agent
-        self.backend = backend_str
-        # presentation of any form of bias
-        self.bias_present = (None if bias_present == "None" else bias_present)
-        # prepare initial conditions for LLM
-        self.scenario = scenario
-        self.reset()
-        self.pipe = None
-        self.img_request = img_request
-        self.biases = ["recency", "frequency", "false_consensus", "confirmation", "status_quo", "gender", "race", "sexual_orientation", "cultural", "education", "religion", "socioeconomic"]
-
-    def generate_bias(self) -> str:
-        """ 
-        ================
-        Cognitive biases 
-        ================
-        """
-        if self.bias_present is None:
-            return ""
-        prompts = load_prompts_json("doctor").get("biases", {})
-        if self.bias_present in prompts:
-            return prompts[self.bias_present]
-        else:
-            print("BIAS TYPE {} NOT SUPPORTED, ignoring bias...".format(self.bias_present))
-            return ""
-
-    def inference_doctor(self, question, image_requested=False) -> str:
-        answer = str()
-        if self.infs >= self.MAX_INFS: return "Maximum inferences reached"
-        prompts = load_prompts_json("doctor")
-        user_prompt = prompts["user_prompt_template"].format(agent_hist=self.agent_hist, question=question)
-        answer = query_model(self.backend, user_prompt, self.system_prompt(), image_requested=image_requested, scene=self.scenario)
-        self.agent_hist += question + "\n\n" + answer + "\n\n"
-        self.infs += 1
-        return answer
-
-    def system_prompt(self) -> str:
-        prompts = load_prompts_json("doctor")
-        bias_prompt = ""
-        if self.bias_present is not None:
-            bias_prompt = self.generate_bias()
-        base = prompts["system_base"].format(self.MAX_INFS, self.infs)
-        base_with_images = base + (prompts.get("system_images_suffix", "") if self.img_request else "")
-        presentation = prompts["system_presentation_suffix"].format(self.presentation)
-        return base_with_images + bias_prompt + presentation
-
-    def reset(self) -> None:
-        self.agent_hist = ""
-        self.presentation = self.scenario.examiner_information()
-
-
-class MeasurementAgent:
-    def __init__(self, scenario, backend_str="gpt-4o-mini") -> None:
-        # conversation history between doctor and patient
-        self.agent_hist = ""
-        # presentation information for measurement 
-        self.presentation = ""
-        # language model backend for measurement agent
-        self.backend = backend_str
-        # prepare initial conditions for LLM
-        self.scenario = scenario
-        self.pipe = None
-        self.reset()
-
-    def inference_measurement(self, question) -> str:
-        prompts = load_prompts_json("measurement")
-        user_prompt = prompts["user_prompt_template"].format(agent_hist=self.agent_hist, question=question)
-        answer = query_model(self.backend, user_prompt, self.system_prompt())
-        self.agent_hist += question + "\n\n" + answer + "\n\n"
-        return answer
-
-    def system_prompt(self) -> str:
-        prompts = load_prompts_json("measurement")
-        base = prompts["system_base"]
-        presentation = prompts["system_presentation_suffix"].format(self.information)
-        return base + presentation
-    
-    def add_hist(self, hist_str) -> None:
-        self.agent_hist += hist_str + "\n\n"
-
-    def reset(self) -> None:
-        self.agent_hist = ""
-        self.information = self.scenario.exam_information()
-
-
-class CostEstimatorAgent:
-    def __init__(self, scenario, backend_str="gpt-4o-mini") -> None:
-        self.agent_hist = ""
-        self.backend = backend_str
-        self.scenario = scenario
-        self.pipe = None
-        self.reset()
-
-    def inference_cost(self, question: str, resource_level: str = "normal") -> str:
-        prompts = load_prompts_json("measurement_cost")
-        user_prompt = prompts["user_prompt_template"].format(
-            agent_hist=self.agent_hist,
-            question=question,
-            resource_level=resource_level,
-            scenario_info=self.information,
-        )
-        answer = query_model(self.backend, user_prompt, self.system_prompt())
-        self.agent_hist += question + "\n\n" + answer + "\n\n"
-        return answer
-
-    def system_prompt(self) -> str:
-        prompts = load_prompts_json("measurement_cost")
-        base = prompts["system_base"]
-        presentation = prompts.get("system_presentation_suffix", "").format(self.information)
-        return base + presentation
-
-    def add_hist(self, hist_str) -> None:
-        self.agent_hist += hist_str + "\n\n"
-
-    def reset(self) -> None:
-        self.agent_hist = ""
-        self.information = self.scenario.exam_information()
-
 
 def _extract_requested_test(dialogue: str) -> str:
     try:
@@ -441,13 +246,6 @@ def _safe_parse_json(text: str):
         pass
     return None
 
-
-def compare_results(diagnosis, correct_diagnosis, moderator_llm):
-    prompts = load_prompts_json("moderator")
-    user_prompt = prompts["user_prompt_template"].format(correct=correct_diagnosis, diag=diagnosis)
-    system_prompt = prompts["system_prompt"]
-    answer = query_model(moderator_llm, user_prompt, system_prompt)
-    return answer.lower()
 
 
 # =========================
