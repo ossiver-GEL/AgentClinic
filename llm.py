@@ -178,6 +178,8 @@ def query_model(
     - If image_requested is True and scene has image_url, send a multimodal message.
     - Runtime switch: set runtime.llm_api to 'responses' | 'chat' | 'auto'.
     """
+    print(f"Querying model '{model_str}' with prompt (len={len(prompt)}): {prompt[:60]}...")
+
     client = get_openai_client()
 
     # Allow global runtime cfg to override call-time defaults
@@ -274,21 +276,23 @@ def query_model(
 
             answer = re.sub(r"\s+", " ", answer)
             if answer:
+                print(f"Model '{model_str}' response (len={len(answer)}): {answer[:60]}...")
                 return answer
             else:
                 raise Exception("Empty response")
-        except Exception:
+        except Exception as e:
+            print(f"LLM query error (will retry): {e}")
             time.sleep(retry_delay)
             continue
     raise Exception("Max retries: timeout")
 
 if __name__ == "__main__":
     # Simple test
-    cfg = load_llm_config(path="localllm.config.json")
+    cfg = load_llm_config()
     print("LLM config loaded:", cfg)
     test_prompt = "List 3 typical symptoms of a cold."
     test_system = "You are a medical expert."
-    response = query_model("openbiollm8b", test_prompt, test_system)
+    response = query_model("openbiollm70b", test_prompt, test_system)
     print("Response:", response)
 
 '''
