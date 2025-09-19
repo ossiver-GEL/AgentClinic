@@ -178,7 +178,7 @@ def query_model(
     - If image_requested is True and scene has image_url, send a multimodal message.
     - Runtime switch: set runtime.llm_api to 'responses' | 'chat' | 'auto'.
     """
-    print(f"Querying model '{model_str}' with prompt (len={len(prompt)}): {prompt[:60]}...")
+    print(f"Querying model '{model_str}' with prompt (len={len(prompt)}): {prompt[:]}...")
 
     client = get_openai_client()
 
@@ -276,7 +276,7 @@ def query_model(
 
             answer = re.sub(r"\s+", " ", answer)
             if answer:
-                print(f"Model '{model_str}' response (len={len(answer)}): {answer[:60]}...")
+                print(f"Model '{model_str}' response (len={len(answer)}): {answer[:]}...")
                 return answer
             else:
                 raise Exception("Empty response")
