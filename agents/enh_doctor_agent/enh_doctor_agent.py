@@ -1,12 +1,78 @@
 import json
-import re
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 from llm import query_model
 from agents.agent_tools import load_prompts_json
 
 
 class EnhancedDoctorAgent:
+    _TEST_CANONICAL: Dict[str, str] = {
+        "chest_x-ray": "Chest_X-Ray",
+        "chest_xray": "Chest_X-Ray",
+        "chest_ct": "Chest_CT",
+        "ct_chest": "Chest_CT",
+        "ct_scan_thorax_and_abdomen": "CT_Scan_Thorax_and_Abdomen",
+        "ct_scan_abdomen": "CT_Scan_Abdomen",
+        "ct_abdomen": "CT_Scan_Abdomen",
+        "ct_brain": "CT_Brain",
+        "brain_ct": "CT_Brain",
+        "head_ct": "CT_Brain",
+        "ct_head_noncontrast": "CT_Head_Noncontrast",
+        "head_ct_noncontrast": "CT_Head_Noncontrast",
+        "mri_brain": "MRI_Brain",
+        "brain_mri": "MRI_Brain",
+        "mri_spine": "MRI_Spine",
+        "spine_mri": "MRI_Spine",
+        "barium_enema": "Barium_Enema",
+        "abdominal_x-ray": "Abdominal_X-ray",
+        "abdominal_xray": "Abdominal_X-ray",
+        "abdominal_ultrasound": "Abdominal_Ultrasound",
+        "ultrasound_abdomen": "Abdominal_Ultrasound",
+        "ultrasound": "Ultrasound",
+        "biopsy": "Biopsy",
+        "lumbar_puncture": "Lumbar_Puncture",
+        "ct_pulmonary_angiography": "CT_Pulmonary_Angiography",
+        "pet_ct": "PET_CT",
+        "echocardiogram": "Echocardiogram",
+        "cardiac_catheterization": "Cardiac_Catheterization",
+        "d-dimer": "D-Dimer",
+        "ddimer": "D-Dimer",
+        "fecal_occult_blood_test": "Fecal_Occult_Blood_Test",
+        "urinalysis": "Urinalysis",
+        "complete_blood_count": "Complete_Blood_Count",
+        "basic_metabolic_panel": "Basic_Metabolic_Panel",
+        "blood_culture": "Blood_Culture",
+        "electrocardiogram": "Electrocardiogram",
+        "ecg": "Electrocardiogram",
+    }
+
+    _TEST_PREDECESSOR_RULES: Dict[str, List[str]] = {
+        "chest_ct": ["Chest_X-Ray"],
+        "ct_chest": ["Chest_X-Ray"],
+        "ct_scan_thorax_and_abdomen": ["Chest_X-Ray", "Abdominal_Ultrasound"],
+        "ct_scan_abdomen": ["Abdominal_Ultrasound"],
+        "ct_abdomen": ["Abdominal_Ultrasound"],
+        "mri_brain": ["CT_Brain"],
+        "brain_mri": ["CT_Brain"],
+        "mri_spine": ["MRI_Brain"],
+        "spine_mri": ["MRI_Brain"],
+        "barium_enema": ["Abdominal_X-ray"],
+        "biopsy": ["Ultrasound"],
+        "lumbar_puncture": ["CT_Brain"],
+        "ct_pulmonary_angiography": ["Chest_X-Ray", "D-Dimer"],
+        "pet_ct": ["Chest_CT"],
+        "cardiac_catheterization": ["Echocardiogram"],
+        "angiography": ["Ultrasound"],
+    }
+
+    _LOW_COST_FALLBACK_TESTS: List[str] = [
+        "Complete_Blood_Count",
+        "Basic_Metabolic_Panel",
+        "Urinalysis",
+        "Chest_X-Ray",
+        "Electrocardiogram",
+    ]
+
     def __init__(
         self,
         scenario,
@@ -20,12 +86,13 @@ class EnhancedDoctorAgent:
         self.agent_hist = ""
         self.presentation = ""
         self.backend = backend_str
-        self.bias_present = None if bias_present == "None" else bias_present
+        self.bias_present = (None if bias_present == "None" else bias_present)
         self.scenario = scenario
-        self.pipe = None
         self.img_request = img_request
+        self.pipe = None
 
         self.prompts = load_prompts_json("enhanced_doctor")
+        self.internal_prompts = self.prompts.get("internal", {})
         self.biases = [
             "recency",
             "frequency",
@@ -40,450 +107,405 @@ class EnhancedDoctorAgent:
             "religion",
             "socioeconomic",
         ]
-        self.bias_prompt = self._resolve_bias()
-        self.diagnosis_threshold = float(self.prompts.get("diagnosis_threshold", 0.9))
-        self.reconsider_threshold = float(self.prompts.get("reconsider_threshold", 0.05))
-        self.max_priority_items = int(self.prompts.get("max_priority_items", 5))
 
-        # Test transition graph encodes manual progression from basic to advanced diagnostics
-        self.test_graph: Dict[str, List[str]] = {
-            "vitals": [],
-            "bedside_screening": ["vitals"],
-            "basic_lab": ["vitals", "bedside_screening"],
-            "advanced_lab": ["basic_lab"],
-            "basic_imaging": ["vitals", "bedside_screening"],
-            "advanced_imaging": ["basic_imaging", "basic_lab"],
-            "specialized": ["advanced_lab", "advanced_imaging"],
-        }
+        self.retry_limit = 3
+        self.diagnosis_threshold = 0.95
+        self.reconsider_threshold = 0.20
+        self.max_reassessments = 2
 
-        self.test_catalog: Dict[str, Dict[str, str]] = {
-            "blood pressure": {"category": "vitals", "display": "Blood Pressure"},
-            "pulse oximetry": {"category": "vitals", "display": "Pulse Oximetry"},
-            "cbc": {"category": "basic_lab", "display": "Complete Blood Count"},
-            "complete blood count": {"category": "basic_lab", "display": "Complete Blood Count"},
-            "cmp": {"category": "basic_lab", "display": "Comprehensive Metabolic Panel"},
-            "comprehensive metabolic panel": {"category": "basic_lab", "display": "Comprehensive Metabolic Panel"},
-            "bmp": {"category": "basic_lab", "display": "Basic Metabolic Panel"},
-            "basic metabolic panel": {"category": "basic_lab", "display": "Basic Metabolic Panel"},
-            "urinalysis": {"category": "basic_lab", "display": "Urinalysis"},
-            "hba1c": {"category": "basic_lab", "display": "HbA1c"},
-            "d-dimer": {"category": "advanced_lab", "display": "D-Dimer"},
-            "troponin": {"category": "advanced_lab", "display": "Troponin"},
-            "arterial blood gas": {"category": "advanced_lab", "display": "Arterial Blood Gas"},
-            "abg": {"category": "advanced_lab", "display": "Arterial Blood Gas"},
-            "thyroid panel": {"category": "advanced_lab", "display": "Thyroid Function Panel"},
-            "liver function tests": {"category": "basic_lab", "display": "Liver Function Tests"},
-            "ultrasound abdomen": {"category": "basic_imaging", "display": "Ultrasound Abdomen"},
-            "ultrasound": {"category": "basic_imaging", "display": "Ultrasound"},
-            "chest x ray": {"category": "basic_imaging", "display": "Chest X-Ray"},
-            "chest x-ray": {"category": "basic_imaging", "display": "Chest X-Ray"},
-            "chest radiograph": {"category": "basic_imaging", "display": "Chest X-Ray"},
-            "ecg": {"category": "bedside_screening", "display": "Electrocardiogram"},
-            "ekg": {"category": "bedside_screening", "display": "Electrocardiogram"},
-            "electrocardiogram": {"category": "bedside_screening", "display": "Electrocardiogram"},
-            "spirometry": {"category": "bedside_screening", "display": "Spirometry"},
-            "pulmonary function test": {"category": "advanced_lab", "display": "Pulmonary Function Test"},
-            "echocardiogram": {"category": "advanced_imaging", "display": "Echocardiogram"},
-            "stress test": {"category": "advanced_imaging", "display": "Cardiac Stress Test"},
-            "ct chest": {"category": "advanced_imaging", "display": "CT Chest"},
-            "computed tomography chest": {"category": "advanced_imaging", "display": "CT Chest"},
-            "ct pulmonary angiography": {"category": "advanced_imaging", "display": "CT Pulmonary Angiography"},
-            "cta": {"category": "advanced_imaging", "display": "CT Angiography"},
-            "mri brain": {"category": "advanced_imaging", "display": "MRI Brain"},
-            "brain mri": {"category": "advanced_imaging", "display": "MRI Brain"},
-            "carotid ultrasound": {"category": "advanced_imaging", "display": "Carotid Ultrasound"},
-            "coronary angiography": {"category": "specialized", "display": "Coronary Angiography"},
-            "cardiac catheterization": {"category": "specialized", "display": "Cardiac Catheterization"},
-            "colonoscopy": {"category": "specialized", "display": "Colonoscopy"},
-            "endoscopy": {"category": "specialized", "display": "Upper Endoscopy"},
-        }
-
-        self.category_defaults: Dict[str, str] = {
-            "vitals": "Blood Pressure",
-            "bedside_screening": "Electrocardiogram",
-            "basic_lab": "Complete Blood Count",
-            "advanced_lab": "D-Dimer",
-            "basic_imaging": "Chest X-Ray",
-            "advanced_imaging": "CT Chest",
-            "specialized": "Coronary Angiography",
-        }
+        self.state_initialized = False
+        self.differential: Dict[str, Any] = {}
+        self.disease_confidence: Dict[str, float] = {}
+        self.priority_queue: List[Dict[str, Any]] = []
+        self.completed_tests: List[str] = []
+        self.completed_tests_index: Set[str] = set()
+        self.pending_test: Optional[Dict[str, Any]] = None
+        self.questions_asked: List[str] = []
+        self.observation_log: List[Dict[str, Any]] = []
+        self.reassessments_done = 0
+        self.last_action: Optional[Dict[str, Any]] = None
 
         self.reset()
 
-    def _resolve_bias(self) -> str:
+    @staticmethod
+    def _normalize_label(label: str) -> str:
+        return label.replace("-", "_").replace(" ", "_").lower()
+
+    def _canonical_test_name(self, name: str) -> str:
+        key = self._normalize_label(name)
+        return self._TEST_CANONICAL.get(key, name)
+
+    def generate_bias(self) -> str:
         if self.bias_present is None:
             return ""
-        bias_bank = self.prompts.get("biases", {})
-        if self.bias_present in bias_bank:
-            return bias_bank[self.bias_present]
-        print(f"BIAS TYPE {self.bias_present} NOT SUPPORTED, ignoring bias...")
-        return ""
+        prompts = self.prompts.get("biases", {})
+        if self.bias_present in prompts:
+            return prompts[self.bias_present]
+        raise ValueError(f"Unsupported bias type: {self.bias_present}")
+
+    def inference_doctor(self, patient_message: str, image_requested: bool = False) -> str:
+        if self.infs >= self.MAX_INFS:
+            raise RuntimeError("Maximum inferences reached")
+
+        if not self.state_initialized:
+            self._initialize_state()
+            self.state_initialized = True
+
+        cleaned_message = (patient_message or "").strip()
+        if cleaned_message:
+            self._process_patient_observation(cleaned_message)
+
+        reply = self._choose_next_action(force_image_request=image_requested)
+
+        self.agent_hist += patient_message + "\n\n" + reply + "\n\n"
+        self.infs += 1
+        self.last_action = {
+            "text": reply,
+            "turn": self.infs,
+        }
+        return reply
 
     def system_prompt(self) -> str:
-        base = self.prompts.get("system_base", "")
-        base_with_images = base + (
-            self.prompts.get("system_images_suffix", "") if self.img_request else ""
-        )
-        presentation_tpl = self.prompts.get("system_presentation_suffix", "{}")
-        presentation = presentation_tpl.format(self.presentation)
-        bias = self.bias_prompt or ""
-        return base_with_images + bias + presentation
+        base = self.prompts["system_base"].format(self.MAX_INFS, self.infs)
+        base_with_images = base + (self.prompts.get("system_images_suffix", "") if self.img_request else "")
+        presentation = self.prompts["system_presentation_suffix"].format(self.presentation)
+        bias_prompt = ""
+        if self.bias_present is not None:
+            bias_prompt = self.generate_bias()
+        return base_with_images + bias_prompt + presentation
 
     def reset(self) -> None:
         self.agent_hist = ""
         self.presentation = self.scenario.examiner_information()
-        self.observations: List[Dict[str, Any]] = []
-        self.differential: Optional[Dict[str, Any]] = None
-        self.feature_index: Dict[str, Tuple[str, Dict[str, Any]]] = {}
-        self.priority_plan: Optional[Dict[str, Any]] = None
-        self.asked_features: set[str] = set()
-        self.tests_requested: set[str] = set()
-        self.completed_categories: set[str] = {"vitals"}
-        self.initial_context = self._build_initial_context()
+        self.state_initialized = False
+        self.differential = {}
+        self.disease_confidence = {}
+        self.priority_queue = []
+        self.completed_tests = []
+        self.completed_tests_index = set()
+        self.pending_test = None
+        self.questions_asked = []
+        self.observation_log = []
+        self.reassessments_done = 0
+        self.last_action = None
 
-    def inference_doctor(self, question: str, image_requested: bool = False) -> str:
-        if self.infs >= self.MAX_INFS:
-            return "Maximum inferences reached"
+    def _initialize_state(self) -> None:
+        basic_info = self._serialize_context(self.presentation)
+        known = self._invoke_internal(
+            "feature_extraction",
+            basic_info=basic_info,
+        )
+        diseases = self._invoke_internal(
+            "differential",
+            basic_info=basic_info,
+            known_features=json.dumps(known, ensure_ascii=False),
+        )
+        table = self._invoke_internal(
+            "feature_table",
+            basic_info=basic_info,
+            known_features=json.dumps(known, ensure_ascii=False),
+            candidate_diseases=json.dumps(diseases, ensure_ascii=False),
+        )
+        self.differential = table
+        self._recompute_confidence()
+        self._refresh_priority_queue()
 
-        patient_message = (question or "").strip()
-        if patient_message:
-            self._record_observation(patient_message)
+    def _serialize_context(self, payload: Any) -> str:
+        if isinstance(payload, (dict, list)):
+            return json.dumps(payload, ensure_ascii=False)
+        return str(payload)
 
-        self._ensure_differential(force=False)
+    def _invoke_internal(self, key: str, **kwargs) -> Dict[str, Any]:
+        prompt_pack = self.internal_prompts.get(key)
+        if not prompt_pack:
+            raise KeyError(f"Missing internal prompt for key '{key}'")
+        system_prompt = prompt_pack["system"]
+        user_prompt = prompt_pack["user"].format(**kwargs)
+        return self._call_model_json(system_prompt, user_prompt)
 
-        if patient_message:
-            self._update_differential(patient_message)
+    def _call_model_json(self, system_prompt: str, user_prompt: str) -> Dict[str, Any]:
+        attempts = 0
+        prompt_variant = user_prompt
+        last_error: Optional[Exception] = None
+        while attempts < self.retry_limit:
+            raw = query_model(self.backend, prompt_variant, system_prompt, scene=self.scenario)
+            try:
+                return self._parse_json(raw)
+            except Exception as exc:
+                last_error = exc
+                attempts += 1
+                if attempts >= self.retry_limit:
+                    break
+                prompt_variant = user_prompt + "\n\nRespond again using STRICT JSON with double quotes and no commentary."
+        raise RuntimeError(f"Failed to obtain structured response: {last_error}")
 
-        if self._needs_reassessment():
-            self._ensure_differential(force=True)
+    def _parse_json(self, raw: str) -> Dict[str, Any]:
+        text = (raw or "").strip()
+        if not text:
+            raise ValueError("Empty response")
+        try:
+            parsed = json.loads(text)
+            if isinstance(parsed, dict):
+                return parsed
+            return {"data": parsed}
+        except json.JSONDecodeError:
+            brace_start = text.find("{")
+            brace_end = text.rfind("}")
+            if brace_start >= 0 and brace_end >= brace_start:
+                snippet = text[brace_start: brace_end + 1]
+                parsed = json.loads(snippet)
+                if isinstance(parsed, dict):
+                    return parsed
+                return {"data": parsed}
+            raise
 
-        self.priority_plan = self._plan_next_steps()
-        diagnosis_check = self._evaluate_diagnosis()
-
-        final_response: Optional[str] = None
-
-        if diagnosis_check.get("ready") or self.infs == self.MAX_INFS - 1:
-            diagnosis_name = self._resolve_diagnosis_name(diagnosis_check)
-            final_response = f"DIAGNOSIS READY: {diagnosis_name}"
-        else:
-            action_item = self._choose_action()
-            if action_item is None:
-                diagnosis_name = self._fallback_diagnosis_name()
-                final_response = f"DIAGNOSIS READY: {diagnosis_name}"
+    def _process_patient_observation(self, content: str) -> None:
+        entry: Dict[str, Any] = {"raw": content}
+        if content.upper().startswith("RESULTS:") or content.upper().startswith("NORMAL READINGS"):
+            entry["type"] = "test_result"
+            if self.pending_test:
+                entry["test_name"] = self.pending_test.get("name")
+                normalized = self._normalize_label(entry["test_name"])
+                if normalized not in self.completed_tests_index:
+                    self.completed_tests_index.add(normalized)
+                    self.completed_tests.append(entry["test_name"])
             else:
-                action = action_item.get("recommended_action", {})
-                final_response = self._render_action(action, action_item)
+                entry["test_name"] = None
+        else:
+            entry["type"] = "patient_answer"
+        entry["turn"] = self.infs
+        entry["question_context"] = self.last_action["text"] if self.last_action else ""
 
-        if final_response is None:
-            raise RuntimeError("Failed to generate doctor response")
+        update_payload = self._invoke_internal(
+            "feature_update",
+            observation=json.dumps(entry, ensure_ascii=False),
+            differential=json.dumps(self.differential, ensure_ascii=False),
+        )
+        entry["summary"] = update_payload.get("summary", "")
+        self._apply_feature_updates(update_payload)
+        self.observation_log.append(entry)
 
-        self._append_history(patient_message, final_response)
-        self.infs += 1
+        if update_payload.get("needs_reassessment") and self.reassessments_done < self.max_reassessments:
+            self.reassessments_done += 1
+            self._reassess_differential()
 
-        if final_response.startswith("REQUEST TEST"):
-            test_name = self._extract_test_from_utterance(final_response)
-            if test_name:
-                self._register_test(test_name)
-        elif "REQUEST TEST" in final_response:
-            test_name = self._extract_test_from_utterance(final_response)
-            if test_name:
-                self._register_test(test_name)
+        self._recompute_confidence()
+        self.pending_test = None
 
-        return final_response
+    def _apply_feature_updates(self, payload: Dict[str, Any]) -> None:
+        updates = payload.get("updates") or []
+        for upd in updates:
+            disease_name = upd.get("disease")
+            feature_name = upd.get("feature")
+            if not disease_name or not feature_name:
+                continue
+            disease = self._find_disease(disease_name)
+            if not disease:
+                continue
+            feature = self._find_feature(disease, feature_name)
+            if not feature:
+                feature = {
+                    "name": feature_name,
+                    "description": upd.get("description") or upd.get("evidence", ""),
+                    "weight": max(float(upd.get("weight") or 0.3), 0.05),
+                    "state": 0,
+                    "collection": upd.get("collection") or "other",
+                    "cost_level": upd.get("cost_level") or "medium",
+                }
+                disease.setdefault("features", []).append(feature)
+            new_state = self._clamp_state(upd.get("new_state"))
+            if new_state is not None:
+                feature["state"] = new_state
+            if upd.get("description"):
+                feature["description"] = upd["description"]
+        contradictions = payload.get("contradictions") or []
+        if contradictions:
+            for note in contradictions:
+                disease = self._find_disease(note.get("disease"))
+                feature = self._find_feature(disease, note.get("feature")) if disease else None
+                if feature:
+                    feature["state"] = self._clamp_state(note.get("new_state", -100))
 
-    def _build_initial_context(self) -> Dict[str, Any]:
+    def _find_disease(self, name: str) -> Optional[Dict[str, Any]]:
+        diseases = self.differential.get("diseases") or []
+        name_lower = name.lower()
+        for disease in diseases:
+            if disease.get("name", "").lower() == name_lower:
+                return disease
+        return None
+
+    def _find_feature(self, disease: Optional[Dict[str, Any]], feature_name: str) -> Optional[Dict[str, Any]]:
+        if not disease:
+            return None
+        features = disease.get("features") or []
+        target = feature_name.lower()
+        for feat in features:
+            if feat.get("name", "").lower() == target:
+                return feat
+        return None
+
+    def _clamp_state(self, value: Any) -> Optional[int]:
+        if value is None:
+            return None
         try:
-            examiner = self.scenario.examiner_information()
-        except AttributeError:
-            examiner = {}
-        try:
-            patient = self.scenario.patient_information()
-        except AttributeError:
-            patient = {}
-        try:
-            baseline = self.scenario.exam_information()
-        except AttributeError:
-            baseline = {}
-        return {
-            "examiner_objective": examiner,
-            "patient_background": patient,
-            "baseline_findings": baseline,
-        }
+            numeric = int(round(float(value)))
+        except (TypeError, ValueError):
+            return None
+        return max(-100, min(100, numeric))
 
-    def _record_observation(self, content: str) -> None:
-        snapshot = content if len(content) <= 500 else content[:497] + "..."
-        self.observations.append({"source": "patient", "content": snapshot})
+    def _recompute_confidence(self) -> None:
+        confidences: Dict[str, float] = {}
+        diseases = self.differential.get("diseases") or []
+        for disease in diseases:
+            features = disease.get("features") or []
+            weights = [max(float(f.get("weight", 0.0)), 0.0) for f in features]
+            total_weight = sum(weights)
+            if total_weight <= 0.0:
+                disease_conf = 0.0
+            else:
+                weighted = 0.0
+                for idx, feat in enumerate(features):
+                    state = self._clamp_state(feat.get("state")) or 0
+                    weight_val = weights[idx]
+                    weighted += weight_val * (state / 100.0)
+                disease_conf = (weighted + total_weight) / (2.0 * total_weight)
+                disease_conf = max(0.0, min(1.0, disease_conf))
+            disease["confidence"] = round(disease_conf, 4)
+            confidences[disease.get("name", "")] = disease_conf
+        self.disease_confidence = confidences
+
+    def _refresh_priority_queue(self) -> None:
+        data = self._invoke_internal(
+            "plan_generation",
+            differential=json.dumps(self.differential, ensure_ascii=False),
+            confidence=json.dumps(self.disease_confidence, ensure_ascii=False),
+            observations=json.dumps(self._recent_observations(), ensure_ascii=False),
+            completed_tests=json.dumps(self.completed_tests, ensure_ascii=False),
+            remaining_turns=str(self.MAX_INFS - self.infs),
+        )
+        items = data.get("prioritized_items") or []
+        self.priority_queue = [item for item in items if item]
 
     def _recent_observations(self, limit: int = 6) -> List[Dict[str, Any]]:
-        return self.observations[-limit:]
+        recent = self.observation_log[-limit:]
+        output = []
+        for entry in recent:
+            output.append(
+                {
+                    "type": entry.get("type"),
+                    "summary": entry.get("summary") or entry.get("raw"),
+                    "test_name": entry.get("test_name"),
+                }
+            )
+        return output
 
-    def _ensure_differential(self, force: bool) -> None:
-        if self.differential is not None and not force:
-            return
-        payload = {
-            "context": self.initial_context,
-            "known_observations": self._recent_observations(),
-            "requested_tests": sorted(self.tests_requested),
-        }
-        response = self._call_section("initial_differential", payload)
-        data = self._json_loads(response)
-        if "diseases" not in data:
-            raise ValueError("Initial differential must contain 'diseases'")
-        self.differential = data
-        self._index_features()
+    def _choose_next_action(self, force_image_request: bool = False) -> str:
+        if self.infs >= self.MAX_INFS - 1:
+            return self._final_diagnosis()
 
-    def _update_differential(self, observation: str) -> None:
-        if not self.differential:
-            return
-        payload = {
-            "current_assessment": self.differential,
-            "new_observation": observation,
-            "observation_window": self._recent_observations(),
-            "asked_features": sorted(self.asked_features),
-            "requested_tests": sorted(self.tests_requested),
-        }
-        response = self._call_section("differential_refinement", payload)
-        data = self._json_loads(response)
-        if "diseases" not in data:
-            raise ValueError("Refined differential missing 'diseases'")
-        self.differential = data
-        self._index_features()
+        best_name, best_conf = self._best_candidate()
+        if best_name and best_conf >= self.diagnosis_threshold:
+            return f"DIAGNOSIS READY: {best_name}"
 
-    def _needs_reassessment(self) -> bool:
-        if not self.differential:
-            return True
-        diseases = self.differential.get("diseases", [])
-        if not diseases:
-            return True
-        top_conf = max((d.get("confidence", 0.0) for d in diseases), default=0.0)
-        if top_conf <= self.reconsider_threshold:
-            return True
-        # Check that there remain informative unresolved features to investigate
-        unresolved = False
-        for disease in diseases:
-            for feat in disease.get("features", []):
-                status = feat.get("status", 0)
-                weight = feat.get("weight", 0)
-                if abs(status) < 15 and weight >= 15:
-                    unresolved = True
-                    break
-            if unresolved:
-                break
-        return not unresolved
+        if (best_conf or 0.0) <= self.reconsider_threshold and self.reassessments_done < self.max_reassessments:
+            self.reassessments_done += 1
+            self._reassess_differential()
+            best_name, best_conf = self._best_candidate()
 
-    def _plan_next_steps(self) -> Dict[str, Any]:
-        if not self.differential:
-            raise ValueError("Cannot plan without differential")
-        payload = {
-            "assessment": self.differential,
-            "asked_features": sorted(self.asked_features),
-            "requested_tests": sorted(self.tests_requested),
-            "completed_categories": sorted(self.completed_categories),
-            "observation_summary": self._recent_observations(limit=4),
-            "max_items": self.max_priority_items,
-        }
-        response = self._call_section("priority_planner", payload)
-        data = self._json_loads(response)
-        if "pending_features" not in data:
-            raise ValueError("Priority planner must return 'pending_features'")
-        return data
+        while self.priority_queue:
+            item = self.priority_queue.pop(0)
+            action_text = self._render_action(item, force_image_request)
+            if action_text:
+                return action_text
 
-    def _evaluate_diagnosis(self) -> Dict[str, Any]:
-        if not self.differential:
-            return {"ready": False}
-        payload = {
-            "assessment": self.differential,
-            "max_inferences": self.MAX_INFS,
-            "questions_used": self.infs,
-            "threshold": self.diagnosis_threshold,
-        }
-        response = self._call_section("diagnosis_evaluator", payload)
-        data = self._json_loads(response)
-        return data
+        self._refresh_priority_queue()
+        if not self.priority_queue:
+            return "Could you describe any other symptoms that concern you most right now?"
+        return self._render_action(self.priority_queue.pop(0), force_image_request) or "Could you describe any other symptoms that concern you most right now?"
 
-    def _choose_action(self) -> Optional[Dict[str, Any]]:
-        if not self.priority_plan:
+    def _render_action(self, item: Dict[str, Any], force_image_request: bool) -> Optional[str]:
+        action_type = (item.get("action_type") or "").lower()
+        if action_type == "test":
+            return self._handle_test_action(item, force_image_request)
+        if action_type == "ask":
+            question = item.get("question_text") or item.get("dialogue") or ""
+            question = question.strip()
+            if not question:
+                return None
+            if question in self.questions_asked:
+                return None
+            self.questions_asked.append(question)
+            return question
+        if action_type == "diagnosis":
+            candidate = item.get("diagnosis") or item.get("target_disease")
+            if candidate:
+                return f"DIAGNOSIS READY: {candidate}"
+        return None
+
+    def _handle_test_action(self, item: Dict[str, Any], force_image_request: bool) -> Optional[str]:
+        requested = item.get("test_name") or ""
+        requested = requested.strip()
+        if not requested:
             return None
-        for item in self.priority_plan.get("pending_features", []):
-            if not isinstance(item, dict):
-                continue
-            feature_id = item.get("feature_id")
-            action = item.get("recommended_action") or {}
-            action_type = (action.get("type") or "").lower()
-            if feature_id and action_type != "request_test" and feature_id in self.asked_features:
-                continue
-            if action_type == "request_test":
-                adjusted = self._apply_test_transition(action)
-                item["recommended_action"] = adjusted
-                action = adjusted
-            if feature_id:
-                self.asked_features.add(feature_id)
-            if action:
-                return item
-        return None
+        canonical = self._canonical_test_name(requested)
+        normalized = self._normalize_label(canonical)
+        if normalized in self.completed_tests_index:
+            return None
 
-    def _render_action(self, action: Dict[str, Any], plan_item: Dict[str, Any]) -> str:
-        action_type = (action.get("type") or "").lower()
-        if action_type == "request_test":
-            test_name = action.get("test_name") or self._extract_test_from_utterance(action.get("utterance", ""))
-            display = self._resolve_test_display(test_name)
-            reason = action.get("rationale") or plan_item.get("rationale")
-            reason = (reason or "I would like to gather more data").strip()
-            if len(reason) > 120:
-                reason = reason[:117].rstrip() + "..."
-            return self._format_test_request(display, reason)
-        prompt = action.get("utterance") or action.get("prompt") or action.get("content")
-        if prompt:
-            prompt = prompt.strip()
-        if not prompt:
-            feature_desc = plan_item.get("feature_description") or plan_item.get("description")
-            if feature_desc:
-                prompt = f"Could you clarify {feature_desc}?"
-            else:
-                prompt = "Could you tell me more about how you are feeling?"
-        if not prompt.endswith("?") and "REQUEST TEST:" not in prompt and not prompt.startswith("DIAGNOSIS READY"):
-            prompt = prompt.rstrip(".") + "?"
-        sentences = re.split(r"(?<=[.!?])\s+", prompt.strip())
-        if len(sentences) > 3:
-            prompt = " ".join(sentences[:3])
-        return prompt
+        urgent = bool(item.get("allow_skip_predecessors")) or force_image_request
+        predecessor = self._select_predecessor(normalized, urgent)
+        final_test = predecessor or canonical
+        final_normalized = self._normalize_label(final_test)
+        if final_normalized in self.completed_tests_index:
+            return None
 
-    def _resolve_diagnosis_name(self, diag_payload: Dict[str, Any]) -> str:
-        top = diag_payload.get("top_diagnosis", {}) if isinstance(diag_payload, dict) else {}
-        name = top.get("name") or self._fallback_diagnosis_name()
-        return name
-
-    def _fallback_diagnosis_name(self) -> str:
-        if not self.differential:
-            return "Undifferentiated condition"
-        diseases = self.differential.get("diseases", [])
-        if not diseases:
-            return "Undifferentiated condition"
-        ordered = sorted(diseases, key=lambda d: d.get("confidence", 0.0), reverse=True)
-        return ordered[0].get("name", "Undifferentiated condition")
-
-    def _append_history(self, patient_message: str, doctor_reply: str) -> None:
-        entry_parts: List[str] = []
-        if patient_message:
-            entry_parts.append(patient_message)
-        entry_parts.append(doctor_reply)
-        self.agent_hist += "\n\n".join(entry_parts) + "\n\n"
-
-    def _index_features(self) -> None:
-        self.feature_index.clear()
-        if not self.differential:
-            return
-        for disease in self.differential.get("diseases", []):
-            disease_name = disease.get("name", "")
-            for feature in disease.get("features", []):
-                desc = feature.get("description", "")
-                fid = feature.get("id") or f"{disease_name}:{desc}".strip()
-                feature["id"] = fid
-                self.feature_index[fid] = (disease_name, feature)
-
-    def _apply_test_transition(self, action: Dict[str, Any]) -> Dict[str, Any]:
-        test_name = action.get("test_name") or self._extract_test_from_utterance(action.get("utterance", ""))
-        if not test_name:
-            return action
-        category, display = self._resolve_test_category(test_name)
-        if not category:
-            action["test_name"] = display
-            return action
-        action["test_name"] = display
-        prerequisites = self.test_graph.get(category, [])
-        missing = [cat for cat in prerequisites if cat not in self.completed_categories]
-        if not missing:
-            return action
-        urgency = (action.get("urgency") or "normal").lower()
-        if urgency == "urgent":
-            return action
-        fallback_category = next((cat for cat in missing if cat in self.category_defaults), None)
-        if fallback_category is None:
-            return action
-        fallback_test = self.category_defaults[fallback_category]
-        normalized = self._normalize_test_name(fallback_test)
-        if normalized in self.tests_requested:
-            return action
-        reason = f"Before we proceed to {display}, I need baseline data from a {fallback_test}"
-        return {
-            "type": "request_test",
-            "test_name": fallback_test,
-            "urgency": "normal",
-            "utterance": self._format_test_request(fallback_test, reason),
-            "rationale": reason,
+        self.pending_test = {
+            "name": final_test,
+            "original": canonical,
+            "reason": item.get("reason"),
         }
+        self.completed_tests_index.add(final_normalized)
+        self.completed_tests.append(final_test)
+        return f"REQUEST TEST: {final_test}"
 
-    def _format_test_request(self, test_name: str, reason: str) -> str:
-        clean_name = self._resolve_test_display(test_name)
-        request_token = clean_name.replace(" ", "_")
-        short_reason = reason.strip().rstrip(".")
-        if len(short_reason) > 120:
-            short_reason = short_reason[:117].rstrip() + "..."
-        return f"{short_reason}. REQUEST TEST: {request_token}"
-
-    def _register_test(self, test_name: str) -> None:
-        category, display = self._resolve_test_category(test_name)
-        normalized = self._normalize_test_name(display)
-        self.tests_requested.add(normalized)
-        if category:
-            self.completed_categories.add(category)
-
-    def _resolve_test_category(self, test_name: Optional[str]) -> Tuple[Optional[str], str]:
-        if not test_name:
-            return None, ""
-        normalized = self._normalize_test_name(test_name)
-        if normalized in self.test_catalog:
-            info = self.test_catalog[normalized]
-            return info.get("category"), info.get("display", test_name)
-        for key, info in self.test_catalog.items():
-            if normalized in key or key in normalized:
-                return info.get("category"), info.get("display", test_name)
-        return None, test_name.strip()
-
-    def _resolve_test_display(self, test_name: Optional[str]) -> str:
-        return self._resolve_test_category(test_name)[1] if test_name else ""
-
-    def _normalize_test_name(self, name: str) -> str:
-        return re.sub(r"\s+", " ", name.replace("_", " ").replace("-", " ")).strip().lower()
-
-    def _extract_test_from_utterance(self, utterance: str) -> Optional[str]:
-        match = re.search(r"REQUEST TEST:\s*([A-Za-z0-9 _-]+)", utterance)
-        if match:
-            test_token = match.group(1).strip()
-            return test_token.replace("_", " ").strip()
+    def _select_predecessor(self, normalized_test: str, urgent: bool) -> Optional[str]:
+        reverse_lookup = {self._normalize_label(v): v for v in self._TEST_CANONICAL.values()}
+        predecessors = self._TEST_PREDECESSOR_RULES.get(normalized_test) or []
+        for pred in predecessors:
+            pred_norm = self._normalize_label(pred)
+            canonical = reverse_lookup.get(pred_norm, pred)
+            if pred_norm not in self.completed_tests_index and not urgent:
+                return canonical
+        if not urgent:
+            for fallback in self._LOW_COST_FALLBACK_TESTS:
+                fallback_norm = self._normalize_label(fallback)
+                if fallback_norm not in self.completed_tests_index:
+                    return fallback
         return None
 
-    def _call_section(self, section: str, payload: Dict[str, Any]) -> str:
-        block = self.prompts.get(section)
-        if not block:
-            raise KeyError(f"Prompt section '{section}' is not defined")
-        system_prompt = block.get("system", "")
-        if self.bias_prompt:
-            system_prompt = system_prompt + "\n\nBias context:\n" + self.bias_prompt
-        user_template = block.get("user_template")
-        if not user_template:
-            raise KeyError(f"Prompt section '{section}' missing 'user_template'")
-        payload_json = json.dumps(payload, ensure_ascii=False)
-        user_prompt = user_template.format(payload=payload_json)
-        return query_model(self.backend, user_prompt, system_prompt, scene=self.scenario)
+    def _best_candidate(self) -> Tuple[Optional[str], float]:
+        if not self.disease_confidence:
+            return None, 0.0
+        best_name = max(self.disease_confidence, key=self.disease_confidence.get)
+        return best_name, self.disease_confidence.get(best_name, 0.0)
 
-    def _json_loads(self, raw: str) -> Any:
-        raw = (raw or "").strip()
-        if not raw:
-            raise ValueError("Empty response from LLM")
-        try:
-            return json.loads(raw)
-        except json.JSONDecodeError:
-            decoder = json.JSONDecoder()
-            for idx in range(len(raw)):
-                try:
-                    obj, _ = decoder.raw_decode(raw[idx:])
-                    return obj
-                except json.JSONDecodeError:
-                    continue
-        truncated = raw[:200] + ("..." if len(raw) > 200 else "")
-        raise ValueError(f"Unable to parse JSON from response: {truncated}")
+    def _final_diagnosis(self) -> str:
+        best_name, _ = self._best_candidate()
+        if not best_name:
+            return "DIAGNOSIS READY: Undifferentiated illness"
+        return f"DIAGNOSIS READY: {best_name}"
 
-    def generate_bias(self) -> str:
-        return self.bias_prompt
+    def _reassess_differential(self) -> None:
+        basic_info = self._serialize_context(self.presentation)
+        table = self._invoke_internal(
+            "feature_table",
+            basic_info=basic_info,
+            known_features=json.dumps(self.differential, ensure_ascii=False),
+            candidate_diseases=json.dumps({"diseases": list(self.disease_confidence.keys())}, ensure_ascii=False),
+        )
+        self.differential = table
+        self._recompute_confidence()
+        self._refresh_priority_queue()
 
+
+__all__ = ["EnhancedDoctorAgent"]

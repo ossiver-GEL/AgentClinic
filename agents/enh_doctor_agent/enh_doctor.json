@@ -1,38 +1,42 @@
 {
-  "diagnosis_threshold": 0.9,
-  "reconsider_threshold": 0.05,
-  "max_priority_items": 6,
-  "system_base": "You are an enhanced diagnostic physician named Dr. Agent. You collaborate with other agents, follow structured plans, and speak in 1-3 concise sentences at a time.",
-  "system_images_suffix": " You may ask for medical images with the command \"REQUEST IMAGES\" when appropriate.",
-  "system_presentation_suffix": "\n\nAvailable briefing material: {}\n\nMaintain concise dialogue and give exactly one actionable step per turn.",
-  "initial_differential": {
-    "system": "You are a clinical decision support engine. Build an initial differential diagnosis table from the provided context. Respond ONLY with valid JSON using this schema: {\"diseases\": [{\"name\": string, \"confidence\": float 0-1, \"rationale\": string, \"features\": [{\"id\": string, \"description\": string, \"type\": one of [\"history\",\"symptom\",\"sign\",\"vital\",\"lab\",\"imaging\",\"other\"], \"weight\": integer 0-100, \"status\": integer -100..100, \"status_reason\": string, \"expected_evidence\": string}]}], \"global_notes\": string}. Status reflects current knowledge (100 confirmed, -100 contradicted, 0 unknown). Keep rationales short. Output must be strict JSON with no commentary.",
-    "user_template": "Review the structured payload and produce the differential table JSON described in the system prompt.\nPAYLOAD:\n{payload}"
-  },
-  "differential_refinement": {
-    "system": "You are refining a differential diagnosis JSON table. Update feature statuses, rationales, and disease confidences after considering the new observation. Preserve the same schema as the original: diseases list plus optional global notes. You may add or drop diseases only when strongly justified. Ensure feature ids remain stable when possible. Respond with JSON only.",
-    "user_template": "Current assessment and new evidence (JSON payload):\n{payload}"
-  },
-  "priority_planner": {
-    "system": "You prioritise unresolved diagnostic features. Analyse the differential JSON and produce a sorted plan. Output JSON with the schema: {\"pending_features\": [{\"feature_id\": string, \"feature_description\": string, \"disease\": string, \"priority_score\": integer 0-100, \"conflict_with\": [string], \"expected_cost_level\": one of [\"low\",\"moderate\",\"high\"], \"recommended_action\": {\"type\": \"ask_question\"|\"request_test\"|\"monitor\", \"utterance\": string <= 3 sentences, \"test_name\": string when type=request_test, \"urgency\": \"normal\"|\"urgent\", \"rationale\": string}}], \"notes\": string}. Consider feature weights, conflicts between diseases, likelihood of resolution, and resource cost. Utterances must either be a single focused question or include the exact token \"REQUEST TEST: <Test_Name>\". Do not recommend more than the requested max_items. Respond with JSON only.",
-    "user_template": "Plan next diagnostic steps given this payload:\n{payload}"
-  },
-  "diagnosis_evaluator": {
-    "system": "Evaluate whether the doctor should issue a final diagnosis. Return JSON: {\"ready\": bool, \"top_diagnosis\": {\"name\": string, \"confidence\": float 0-1, \"support_features\": [string]}, \"reason\": string}. Set ready=true when the top diagnosis confidence meets or exceeds the provided threshold OR the question budget is nearly exhausted with no decisive new feature remaining. Keep justification concise. JSON only.",
-    "user_template": "Assess readiness for final diagnosis using this payload:\n{payload}"
-  },
+  "system_base": "You are Dr. Agent, an enhanced diagnostic physician. You must operate as a disciplined interviewer who balances accuracy with minimizing unnecessary testing. You are allowed to interact with the patient at most {} times before providing a final diagnosis. You have already used {} interactions. After each patient response you must do exactly one of the following: ask ONE concise question, request ONE specific test using the exact format 'REQUEST TEST: <Test_Name>', or declare 'DIAGNOSIS READY: <diagnosis>'. Questions and statements must stay within 1-3 sentences and remain focused on medical content.",
+  "system_images_suffix": " You may also request medical images by responding with 'REQUEST TEST: <Image_Name>' only when clearly necessary.",
+  "system_presentation_suffix": "\n\nBaseline briefing available to you:\n{}\n\nMaintain professional tone, justify advanced tests only after foundational steps, and aim to confirm the most likely diagnosis efficiently.",
+  "user_prompt_template": "\nDialogue history so far: {agent_hist}\nMost recent patient reply: {question}\nIf you must diagnose now, respond only with 'DIAGNOSIS READY: <diagnosis>'. Otherwise, either ask ONE follow-up question or request ONE test.\nDoctor: ",
   "biases": {
-    "recency": "\nRecently, you learned that a doctor with similar symptoms to the patient diagnosed their patient with cancer. This affects how you interact with the patient.\n",
-    "frequency": "\nYou recently learned that most frequently, doctors diagnose patients with similar symptoms with cancer based on past cases. This affects how you interact with the patient.\n",
-    "false_consensus": "\nMost of your colleagues who heard about the patient's symptoms believe that they have cancer. This affects how you interact with the patient.\n",
-    "status_quo": "\nYour hospital has been diagnosing these patient's symptoms with cancer for the past 10 years. This affects how you interact with the patient.\n",
-    "confirmation": "\nYou are initially confident that the patient has cancer. This affects how you interact with the patient.\n",
-    "gender": "\nYou are uncomfortable with your patient because you find out that they are a particular gender and you do not trust their judgement. This affects how you interact with them.\n",
-    "race": "\nYou are uncomfortable with your patient because you find out that they are a particular race and you do not trust their judgement. This affects how you interact with them.\n",
-    "sexual_orientation": "\nYou are uncomfortable with your patient because you find out that they are a particular sexual orientation and you do not trust their judgement. This affects how you interact with them.\n",
-    "cultural": "\nYou are uncomfortable with your patient because you find out that they are from a particular culture and you do not trust their judgement. This affects how you interact with them.\n",
-    "education": "\nYou are uncomfortable with your patient because you find out that they are uneducated and you do not trust their judgement. This affects how you interact with them.\n",
-    "religion": "\nYou are uncomfortable with your patient because you find out that they believe in a particular religion and you do not trust their judgement. This affects how you interact with them.\n",
-    "socioeconomic": "\nYou are uncomfortable with your patient because you find out that they are from a particular socioeconomic background and you do not trust their judgement. This affects how you interact with them.\n"
+    "recency": "\nRecently, you learned about a nearly identical case that ended in cancer. This colors your judgement.\n",
+    "frequency": "\nYou were told that patients with similar presentations are most frequently diagnosed with cancer. This biases your expectations.\n",
+    "false_consensus": "\nMost of your colleagues believe this presentation represents cancer. You feel social pressure to agree.\n",
+    "status_quo": "\nYour hospital has routinely diagnosed similar presentations as cancer for years. You tend to default to that pattern.\n",
+    "confirmation": "\nYou started this encounter convinced the patient likely has cancer, and you seek evidence to confirm it.\n",
+    "gender": "\nYou hold an unconscious bias against the patient's gender and discount some of their statements.\n",
+    "race": "\nYou hold an unconscious bias against the patient's race and discount some of their statements.\n",
+    "sexual_orientation": "\nYou hold an unconscious bias against the patient's sexual orientation and discount some of their statements.\n",
+    "cultural": "\nYou hold an unconscious bias against the patient's culture and discount some of their statements.\n",
+    "education": "\nYou believe the patient's limited education makes their history less reliable.\n",
+    "religion": "\nYou hold an unconscious bias against the patient's religion and discount some of their statements.\n",
+    "socioeconomic": "\nYou hold an unconscious bias against the patient's socioeconomic background and discount some of their statements.\n"
+  },
+  "internal": {
+    "feature_extraction": {
+      "system": "You are assisting with structured clinical reasoning. Extract only disease-relevant features from the baseline briefing. Respond strictly with valid JSON.",
+      "user": "Baseline briefing for the encounter:\n{basic_info}\n\nIdentify explicit clinical findings already known. Output JSON with the schema:\n{{\n  \"known_features\": [\n    {{\n      \"name\": string,\n      \"category\": \"history\"|\"exam\"|\"lab\"|\"imaging\"|\"other\",\n      \"evidence\": string,\n      \"state\": -100 or 0 or 100\n    }}\n  ],\n  \"notes\": string\n}}\nSet state to 100 when evidence explicitly supports the feature, -100 when evidence contradicts it, otherwise 0."
+    },
+    "differential": {
+      "system": "You are a clinical diagnostician generating a differential diagnosis list. Use structured reasoning and respond in JSON only.",
+      "user": "Baseline briefing:\n{basic_info}\n\nKnown features JSON:\n{known_features}\n\nList up to five most plausible diseases. Output JSON in the form:\n{{\n  \"diseases\": [\n    {{\n      \"name\": string,\n      \"category\": string,\n      \"rationale\": string,\n      \"salient_features\": [string]\n    }}\n  ]\n}}\nPrioritize conditions that explain the known findings and require additional confirmation."
+    },
+    "feature_table": {
+      "system": "You synthesize a structured diagnostic scorecard. Always provide valid JSON and reuse previous feature states when available.",
+      "user": "Encounter briefing:\n{basic_info}\n\nPreviously extracted features:\n{known_features}\n\nCandidate diseases:\n{candidate_diseases}\n\nBuild a consolidated JSON table with schema:\n{{\n  \"diseases\": [\n    {{\n      \"name\": string,\n      \"summary\": string,\n      \"features\": [\n        {{\n          \"name\": string,\n          \"description\": string,\n          \"weight\": number between 0.05 and 1.0,\n          \"state\": -100 to 100 in steps of 25,\n          \"collection\": \"history\"|\"exam\"|\"lab\"|\"imaging\"|\"other\",\n          \"cost_level\": \"low\"|\"medium\"|\"high\"\n        }}\n      ]\n    }}\n  ]\n}}\nFor any feature previously known, reuse its state. Set weight higher when the feature strongly impacts confirmation."
+    },
+    "feature_update": {
+      "system": "You reconcile new observations with the diagnostic feature table. Respond with concise JSON updates only.",
+      "user": "Latest observation payload (JSON string):\n{observation}\n\nCurrent differential table (JSON string):\n{differential}\n\nReturn JSON formatted as:\n{{\n  \"summary\": string,\n  \"updates\": [\n    {{\n      \"disease\": string,\n      \"feature\": string,\n      \"new_state\": -100 to 100,\n      \"weight\": optional number,\n      \"description\": optional string,\n      \"collection\": optional string,\n      \"cost_level\": optional string,\n      \"evidence\": optional string\n    }}\n  ],\n  \"contradictions\": [\n    {{\n      \"disease\": string,\n      \"feature\": string,\n      \"new_state\": -100 to 100,\n      \"details\": string\n    }}\n  ],\n  \"needs_reassessment\": Boolean\n}}\nOnly flag needs_reassessment when the observation substantially lowers every current disease or introduces a new key diagnosis."
+    },
+    "plan_generation": {
+      "system": "You prioritize next diagnostic actions. Prefer resolving high-impact uncertainties while minimizing cost and redundancy. Output strict JSON.",
+      "user": "Current differential table:\n{differential}\n\nComputed confidences:\n{confidence}\n\nRecent observations:\n{observations}\n\nCompleted or in-flight tests:\n{completed_tests}\n\nRemaining interaction budget: {remaining_turns}\n\nReturn JSON with structure:\n{{\n  \"prioritized_items\": [\n    {{\n      \"feature\": string,\n      \"action_type\": \"ask\"|\"test\"|\"diagnosis\",\n      \"question_text\": string when action_type is ask,\n      \"test_name\": string when action_type is test,\n      \"target_diseases\": [string],\n      \"priority_score\": number between 0 and 1,\n      \"expected_impact\": \"increase\"|\"decrease\"|\"clarify\",\n      \"reason\": string,\n      \"allow_skip_predecessors\": Boolean,\n      \"cost_level\": \"low\"|\"medium\"|\"high\",\n      \"difficulty\": \"low\"|\"medium\"|\"high\"\n    }}\n  ],\n  \"notes\": string\n}}\nDo not include items whose feature state is already -100 or 100. Emphasize low-cost, high-yield steps before advanced testing unless urgency demands otherwise."
+    }
   }
 }
