@@ -1,86 +1,43 @@
 import json
-from typing import Any, Dict, List, Optional, Set, Tuple
+import re
+from typing import Any, Dict, List, Optional
 
 from llm import query_model
 from agents.agent_tools import load_prompts_json
+from .test_graph import (
+    canonicalize_test_name,
+    cost_level,
+    display_name,
+    missing_prerequisites,
+    resolve_test_name,
+)
+
+
+def _clamp(value: float, low: float, high: float) -> float:
+    return max(low, min(high, value))
+
+
+_TEMPLATE_PATTERN = re.compile(r"\{([a-zA-Z0-9_]+)\}")
+
+
+def _render_template(template: str, mapping: Dict[str, Any]) -> str:
+    def repl(match: 're.Match[str]') -> str:
+        key = match.group(1)
+        if key not in mapping:
+            raise KeyError(key)
+        value = mapping[key]
+        return value if isinstance(value, str) else str(value)
+
+    result = _TEMPLATE_PATTERN.sub(repl, template)
+    if _TEMPLATE_PATTERN.search(result):
+        leftovers = sorted({m.group(1) for m in _TEMPLATE_PATTERN.finditer(result)})
+        raise KeyError(f"Unresolved template keys: {leftovers}")
+    return result
 
 
 class EnhancedDoctorAgent:
-    _TEST_CANONICAL: Dict[str, str] = {
-        "chest_x-ray": "Chest_X-Ray",
-        "chest_xray": "Chest_X-Ray",
-        "chest_ct": "Chest_CT",
-        "ct_chest": "Chest_CT",
-        "ct_scan_thorax_and_abdomen": "CT_Scan_Thorax_and_Abdomen",
-        "ct_scan_abdomen": "CT_Scan_Abdomen",
-        "ct_abdomen": "CT_Scan_Abdomen",
-        "ct_brain": "CT_Brain",
-        "brain_ct": "CT_Brain",
-        "head_ct": "CT_Brain",
-        "ct_head_noncontrast": "CT_Head_Noncontrast",
-        "head_ct_noncontrast": "CT_Head_Noncontrast",
-        "mri_brain": "MRI_Brain",
-        "brain_mri": "MRI_Brain",
-        "mri_spine": "MRI_Spine",
-        "spine_mri": "MRI_Spine",
-        "barium_enema": "Barium_Enema",
-        "abdominal_x-ray": "Abdominal_X-ray",
-        "abdominal_xray": "Abdominal_X-ray",
-        "abdominal_ultrasound": "Abdominal_Ultrasound",
-        "ultrasound_abdomen": "Abdominal_Ultrasound",
-        "ultrasound": "Ultrasound",
-        "biopsy": "Biopsy",
-        "lumbar_puncture": "Lumbar_Puncture",
-        "ct_pulmonary_angiography": "CT_Pulmonary_Angiography",
-        "pet_ct": "PET_CT",
-        "echocardiogram": "Echocardiogram",
-        "cardiac_catheterization": "Cardiac_Catheterization",
-        "d-dimer": "D-Dimer",
-        "ddimer": "D-Dimer",
-        "fecal_occult_blood_test": "Fecal_Occult_Blood_Test",
-        "urinalysis": "Urinalysis",
-        "complete_blood_count": "Complete_Blood_Count",
-        "basic_metabolic_panel": "Basic_Metabolic_Panel",
-        "blood_culture": "Blood_Culture",
-        "electrocardiogram": "Electrocardiogram",
-        "ecg": "Electrocardiogram",
-    }
 
-    _TEST_PREDECESSOR_RULES: Dict[str, List[str]] = {
-        "chest_ct": ["Chest_X-Ray"],
-        "ct_chest": ["Chest_X-Ray"],
-        "ct_scan_thorax_and_abdomen": ["Chest_X-Ray", "Abdominal_Ultrasound"],
-        "ct_scan_abdomen": ["Abdominal_Ultrasound"],
-        "ct_abdomen": ["Abdominal_Ultrasound"],
-        "mri_brain": ["CT_Brain"],
-        "brain_mri": ["CT_Brain"],
-        "mri_spine": ["MRI_Brain"],
-        "spine_mri": ["MRI_Brain"],
-        "barium_enema": ["Abdominal_X-ray"],
-        "biopsy": ["Ultrasound"],
-        "lumbar_puncture": ["CT_Brain"],
-        "ct_pulmonary_angiography": ["Chest_X-Ray", "D-Dimer"],
-        "pet_ct": ["Chest_CT"],
-        "cardiac_catheterization": ["Echocardiogram"],
-        "angiography": ["Ultrasound"],
-    }
-
-    _LOW_COST_FALLBACK_TESTS: List[str] = [
-        "Complete_Blood_Count",
-        "Basic_Metabolic_Panel",
-        "Urinalysis",
-        "Chest_X-Ray",
-        "Electrocardiogram",
-    ]
-
-    def __init__(
-        self,
-        scenario,
-        backend_str: str = "gpt-4o-mini",
-        max_infs: int = 20,
-        bias_present: Optional[str] = None,
-        img_request: bool = False,
-    ) -> None:
+    def __init__(self, scenario, backend_str="gpt-4o-mini", max_infs=20, bias_present=None, img_request=False) -> None:
         self.infs = 0
         self.MAX_INFS = max_infs
         self.agent_hist = ""
@@ -88,11 +45,8 @@ class EnhancedDoctorAgent:
         self.backend = backend_str
         self.bias_present = (None if bias_present == "None" else bias_present)
         self.scenario = scenario
-        self.img_request = img_request
         self.pipe = None
-
-        self.prompts = load_prompts_json("enhanced_doctor")
-        self.internal_prompts = self.prompts.get("internal", {})
+        self.img_request = img_request
         self.biases = [
             "recency",
             "frequency",
@@ -107,33 +61,11 @@ class EnhancedDoctorAgent:
             "religion",
             "socioeconomic",
         ]
-
-        self.retry_limit = 3
-        self.diagnosis_threshold = 0.95
-        self.reconsider_threshold = 0.20
-        self.max_reassessments = 2
-
-        self.state_initialized = False
-        self.differential: Dict[str, Any] = {}
-        self.disease_confidence: Dict[str, float] = {}
-        self.priority_queue: List[Dict[str, Any]] = []
-        self.completed_tests: List[str] = []
-        self.completed_tests_index: Set[str] = set()
-        self.pending_test: Optional[Dict[str, Any]] = None
-        self.questions_asked: List[str] = []
-        self.observation_log: List[Dict[str, Any]] = []
-        self.reassessments_done = 0
-        self.last_action: Optional[Dict[str, Any]] = None
-
+        self.prompts = load_prompts_json("enhanced_doctor")
+        self.confidence_threshold = 0.9
+        self.reassessment_floor = 0.05
+        self.max_plan_items = 5
         self.reset()
-
-    @staticmethod
-    def _normalize_label(label: str) -> str:
-        return label.replace("-", "_").replace(" ", "_").lower()
-
-    def _canonical_test_name(self, name: str) -> str:
-        key = self._normalize_label(name)
-        return self._TEST_CANONICAL.get(key, name)
 
     def generate_bias(self) -> str:
         if self.bias_present is None:
@@ -141,371 +73,511 @@ class EnhancedDoctorAgent:
         prompts = self.prompts.get("biases", {})
         if self.bias_present in prompts:
             return prompts[self.bias_present]
-        raise ValueError(f"Unsupported bias type: {self.bias_present}")
+        print(f"BIAS TYPE {self.bias_present} NOT SUPPORTED, ignoring bias...")
+        return ""
 
-    def inference_doctor(self, patient_message: str, image_requested: bool = False) -> str:
+    def inference_doctor(self, question: str, image_requested: bool = False) -> str:
         if self.infs >= self.MAX_INFS:
-            raise RuntimeError("Maximum inferences reached")
+            return "Maximum inferences reached"
 
-        if not self.state_initialized:
-            self._initialize_state()
-            self.state_initialized = True
+        question = (question or "").strip()
+        if question:
+            self._handle_new_observation(question)
 
-        cleaned_message = (patient_message or "").strip()
-        if cleaned_message:
-            self._process_patient_observation(cleaned_message)
+        self._ensure_initial_assessment()
+        self._recompute_confidences()
 
-        reply = self._choose_next_action(force_image_request=image_requested)
+        if self._should_reassess():
+            self._ensure_initial_assessment(force=True)
+            self._recompute_confidences()
 
-        self.agent_hist += patient_message + "\n\n" + reply + "\n\n"
+        reply: str
+        if self._ready_to_diagnose():
+            reply = self._prepare_diagnosis_reply()
+        else:
+            action = self._choose_next_action()
+            reply = self._render_action(action)
+
+        self.agent_hist += question + "\n\n" + reply + "\n\n"
         self.infs += 1
-        self.last_action = {
-            "text": reply,
-            "turn": self.infs,
-        }
         return reply
 
     def system_prompt(self) -> str:
         base = self.prompts["system_base"].format(self.MAX_INFS, self.infs)
         base_with_images = base + (self.prompts.get("system_images_suffix", "") if self.img_request else "")
-        presentation = self.prompts["system_presentation_suffix"].format(self.presentation)
-        bias_prompt = ""
-        if self.bias_present is not None:
-            bias_prompt = self.generate_bias()
-        return base_with_images + bias_prompt + presentation
+        bias_prompt = self.generate_bias()
+        presentation_suffix = self.prompts["system_presentation_suffix"].format(self.presentation)
+        return base_with_images + bias_prompt + presentation_suffix
 
     def reset(self) -> None:
         self.agent_hist = ""
         self.presentation = self.scenario.examiner_information()
-        self.state_initialized = False
-        self.differential = {}
-        self.disease_confidence = {}
-        self.priority_queue = []
-        self.completed_tests = []
-        self.completed_tests_index = set()
-        self.pending_test = None
-        self.questions_asked = []
-        self.observation_log = []
-        self.reassessments_done = 0
-        self.last_action = None
-
-    def _initialize_state(self) -> None:
-        basic_info = self._serialize_context(self.presentation)
-        known = self._invoke_internal(
-            "feature_extraction",
-            basic_info=basic_info,
-        )
-        diseases = self._invoke_internal(
-            "differential",
-            basic_info=basic_info,
-            known_features=json.dumps(known, ensure_ascii=False),
-        )
-        table = self._invoke_internal(
-            "feature_table",
-            basic_info=basic_info,
-            known_features=json.dumps(known, ensure_ascii=False),
-            candidate_diseases=json.dumps(diseases, ensure_ascii=False),
-        )
-        self.differential = table
-        self._recompute_confidence()
-        self._refresh_priority_queue()
-
-    def _serialize_context(self, payload: Any) -> str:
-        if isinstance(payload, (dict, list)):
-            return json.dumps(payload, ensure_ascii=False)
-        return str(payload)
-
-    def _invoke_internal(self, key: str, **kwargs) -> Dict[str, Any]:
-        prompt_pack = self.internal_prompts.get(key)
-        if not prompt_pack:
-            raise KeyError(f"Missing internal prompt for key '{key}'")
-        system_prompt = prompt_pack["system"]
-        user_prompt = prompt_pack["user"].format(**kwargs)
-        return self._call_model_json(system_prompt, user_prompt)
-
-    def _call_model_json(self, system_prompt: str, user_prompt: str) -> Dict[str, Any]:
-        attempts = 0
-        prompt_variant = user_prompt
-        last_error: Optional[Exception] = None
-        while attempts < self.retry_limit:
-            raw = query_model(self.backend, prompt_variant, system_prompt, scene=self.scenario)
-            try:
-                return self._parse_json(raw)
-            except Exception as exc:
-                last_error = exc
-                attempts += 1
-                if attempts >= self.retry_limit:
-                    break
-                prompt_variant = user_prompt + "\n\nRespond again using STRICT JSON with double quotes and no commentary."
-        raise RuntimeError(f"Failed to obtain structured response: {last_error}")
-
-    def _parse_json(self, raw: str) -> Dict[str, Any]:
-        text = (raw or "").strip()
-        if not text:
-            raise ValueError("Empty response")
-        try:
-            parsed = json.loads(text)
-            if isinstance(parsed, dict):
-                return parsed
-            return {"data": parsed}
-        except json.JSONDecodeError:
-            brace_start = text.find("{")
-            brace_end = text.rfind("}")
-            if brace_start >= 0 and brace_end >= brace_start:
-                snippet = text[brace_start: brace_end + 1]
-                parsed = json.loads(snippet)
-                if isinstance(parsed, dict):
-                    return parsed
-                return {"data": parsed}
-            raise
-
-    def _process_patient_observation(self, content: str) -> None:
-        entry: Dict[str, Any] = {"raw": content}
-        if content.upper().startswith("RESULTS:") or content.upper().startswith("NORMAL READINGS"):
-            entry["type"] = "test_result"
-            if self.pending_test:
-                entry["test_name"] = self.pending_test.get("name")
-                normalized = self._normalize_label(entry["test_name"])
-                if normalized not in self.completed_tests_index:
-                    self.completed_tests_index.add(normalized)
-                    self.completed_tests.append(entry["test_name"])
-            else:
-                entry["test_name"] = None
+        self.patient_profile = self.scenario.patient_information()
+        exam_info = self.scenario.exam_information()
+        self.physical_exam = {k: v for k, v in exam_info.items() if k != "tests"}
+        tests_dict = exam_info.get("tests", {})
+        if isinstance(tests_dict, dict):
+            self.available_tests = list(tests_dict.keys())
         else:
-            entry["type"] = "patient_answer"
-        entry["turn"] = self.infs
-        entry["question_context"] = self.last_action["text"] if self.last_action else ""
+            self.available_tests = tests_dict if isinstance(tests_dict, list) else []
+        self.initial_assessment_done = False
+        self.typical_features: List[Dict[str, Any]] = []
+        self.diseases: Dict[str, Dict[str, Any]] = {}
+        self.priority_plan: List[Dict[str, Any]] = []
+        self.completed_tests: List[str] = []
+        self.pending_tests: List[str] = []
+        self.observation_log: List[Dict[str, Any]] = []
+        self.last_action: Optional[Dict[str, Any]] = None
+        self.plan_failures = 0
 
-        update_payload = self._invoke_internal(
-            "feature_update",
-            observation=json.dumps(entry, ensure_ascii=False),
-            differential=json.dumps(self.differential, ensure_ascii=False),
+    # ------------------------
+    # Core orchestration
+    # ------------------------
+    def _ensure_initial_assessment(self, force: bool = False) -> None:
+        if self.initial_assessment_done and not force:
+            return
+
+        base_context = {
+            "examiner_objective": self.presentation,
+            "patient_profile": self.patient_profile,
+            "physical_exam": self.physical_exam,
+            "available_tests": self.available_tests[:20],
+            "observation_summary": self._summarize_observations(limit=6),
+        }
+        previous_state = self.diseases if force else {}
+
+        features_payload = self._call_json_prompt(
+            "feature_extractor",
+            {
+                "basic_info": json.dumps(base_context, ensure_ascii=False),
+            },
         )
-        entry["summary"] = update_payload.get("summary", "")
-        self._apply_feature_updates(update_payload)
-        self.observation_log.append(entry)
+        if not isinstance(features_payload, dict):
+            raise ValueError("feature_extractor response must be a JSON object")
+        self.typical_features = features_payload.get("typical_features", [])
 
-        if update_payload.get("needs_reassessment") and self.reassessments_done < self.max_reassessments:
-            self.reassessments_done += 1
-            self._reassess_differential()
+        diseases_payload = self._call_json_prompt(
+            "disease_builder",
+            {
+                "basic_info": json.dumps(base_context, ensure_ascii=False),
+                "typical_features": json.dumps(self.typical_features, ensure_ascii=False),
+                "existing_diseases": json.dumps(self._serialize_disease_table_for_prompt(include_reason=True), ensure_ascii=False),
+            },
+        )
+        if not isinstance(diseases_payload, dict):
+            raise ValueError("disease_builder response must be a JSON object")
+        self._ingest_disease_table(diseases_payload, previous_state)
+        self.initial_assessment_done = True
+        self.priority_plan = []
 
-        self._recompute_confidence()
-        self.pending_test = None
+    def _handle_new_observation(self, observation: str) -> None:
+        observation_type = "patient_response"
+        if self.last_action and self.last_action.get("type") == "test":
+            observation_type = "measurement_result"
+            last_test = self.last_action.get("test_name")
+            if last_test:
+                canonical, _ = resolve_test_name(last_test)
+                if canonical in self.pending_tests:
+                    self.pending_tests = [t for t in self.pending_tests if t != canonical]
+                if canonical not in self.completed_tests:
+                    self.completed_tests.append(canonical)
+        self.observation_log.append({"type": observation_type, "text": observation})
+        status_payload = self._call_json_prompt(
+            "status_update",
+            {
+                "observation": json.dumps(
+                    {
+                        "latest": observation,
+                        "type": observation_type,
+                        "previous_action": self.last_action,
+                        "recent_observations": self._summarize_observations(limit=6),
+                    },
+                    ensure_ascii=False,
+                ),
+                "disease_table": json.dumps(
+                    self._serialize_disease_table_for_prompt(include_reason=True),
+                    ensure_ascii=False,
+                ),
+            },
+        )
+        if not isinstance(status_payload, dict):
+            raise ValueError("status_update response must be a JSON object")
+        self._apply_status_updates(status_payload)
+        if status_payload.get("reconsider_diseases"):
+            self.initial_assessment_done = False
+        self.priority_plan = []
 
-    def _apply_feature_updates(self, payload: Dict[str, Any]) -> None:
-        updates = payload.get("updates") or []
-        for upd in updates:
-            disease_name = upd.get("disease")
-            feature_name = upd.get("feature")
+    def _apply_status_updates(self, payload: Dict[str, Any]) -> None:
+        updates = payload.get("updates", [])
+        for update in updates:
+            if not isinstance(update, dict):
+                continue
+            disease_name = update.get("disease")
+            feature_name = update.get("feature")
             if not disease_name or not feature_name:
                 continue
-            disease = self._find_disease(disease_name)
+            disease = self.diseases.get(disease_name)
             if not disease:
                 continue
-            feature = self._find_feature(disease, feature_name)
+            feature = disease["features"].get(feature_name)
             if not feature:
-                feature = {
+                continue
+            if "status" in update:
+                feature["status"] = int(_clamp(float(update["status"]), -100, 100))
+            if "status_reason" in update:
+                feature["status_reason"] = str(update["status_reason"])
+            if "weight" in update:
+                feature["weight"] = float(_clamp(float(update["weight"]), 0, 100))
+            if "recommended_test" in update and update["recommended_test"]:
+                feature["recommended_test"] = str(update["recommended_test"])
+            if "conflicts_with" in update and isinstance(update["conflicts_with"], list):
+                feature["conflicts_with"] = [str(c) for c in update["conflicts_with"]]
+            if "cost_hint" in update:
+                feature["cost_hint"] = str(update["cost_hint"])
+        new_features = payload.get("new_features", [])
+        for entry in new_features:
+            if not isinstance(entry, dict):
+                continue
+            disease_name = entry.get("disease")
+            feature_name = entry.get("feature")
+            if not disease_name or not feature_name:
+                continue
+            disease = self.diseases.setdefault(
+                disease_name,
+                {"name": disease_name, "rationale": entry.get("rationale", ""), "features": {}, "confidence": 0.0},
+            )
+            feature = disease["features"].get(feature_name, {})
+            feature["name"] = feature_name
+            feature["weight"] = float(_clamp(float(entry.get("weight", 40.0)), 0, 100))
+            feature["status"] = int(_clamp(float(entry.get("status", 0)), -100, 100))
+            feature["status_reason"] = str(entry.get("status_reason", ""))
+            feature["data_type"] = str(entry.get("data_type", "history"))
+            feature["recommended_test"] = entry.get("recommended_test")
+            feature["cost_hint"] = str(entry.get("cost_hint", "moderate"))
+            feature["conflicts_with"] = [str(c) for c in entry.get("conflicts_with", [])]
+            disease["features"][feature_name] = feature
+        if payload.get("prune_diseases"):
+            keep = set(str(name) for name in payload["prune_diseases"] if isinstance(name, str))
+            if keep:
+                self.diseases = {k: v for k, v in self.diseases.items() if k in keep}
+
+    def _ingest_disease_table(self, payload: Dict[str, Any], previous: Dict[str, Dict[str, Any]]) -> None:
+        diseases_list = payload.get("diseases", [])
+        if not isinstance(diseases_list, list) or not diseases_list:
+            raise ValueError("disease_builder must return a non-empty 'diseases' list")
+        new_table: Dict[str, Dict[str, Any]] = {}
+        for disease_entry in diseases_list:
+            if not isinstance(disease_entry, dict):
+                continue
+            disease_name = disease_entry.get("name")
+            if not disease_name:
+                continue
+            features_block = disease_entry.get("features", [])
+            disease_state = {
+                "name": disease_name,
+                "rationale": disease_entry.get("rationale", ""),
+                "features": {},
+                "confidence": 0.0,
+            }
+            prev_features = {}
+            if disease_name in previous:
+                prev_features = previous[disease_name].get("features", {})
+            for feature_entry in features_block:
+                if not isinstance(feature_entry, dict):
+                    continue
+                feature_name = feature_entry.get("name")
+                if not feature_name:
+                    continue
+                prev_feature = prev_features.get(feature_name, {})
+                status_raw = feature_entry.get("status", 0)
+                prev_status = prev_feature.get("status")
+                status_val = int(_clamp(float(status_raw), -100, 100))
+                if prev_status is not None and abs(prev_status) > abs(status_val):
+                    status_val = int(_clamp(float(prev_status), -100, 100))
+                weight_val = float(_clamp(float(feature_entry.get("weight", prev_feature.get("weight", 40))), 0, 100))
+                feature_state = {
                     "name": feature_name,
-                    "description": upd.get("description") or upd.get("evidence", ""),
-                    "weight": max(float(upd.get("weight") or 0.3), 0.05),
-                    "state": 0,
-                    "collection": upd.get("collection") or "other",
-                    "cost_level": upd.get("cost_level") or "medium",
+                    "weight": weight_val,
+                    "status": status_val,
+                    "status_reason": feature_entry.get("status_reason", prev_feature.get("status_reason", "")),
+                    "data_type": feature_entry.get("data_type", prev_feature.get("data_type", "history")),
+                    "recommended_test": feature_entry.get("recommended_test", prev_feature.get("recommended_test")),
+                    "cost_hint": feature_entry.get("cost_hint", prev_feature.get("cost_hint", "moderate")),
+                    "conflicts_with": feature_entry.get("conflicts_with", prev_feature.get("conflicts_with", [])),
                 }
-                disease.setdefault("features", []).append(feature)
-            new_state = self._clamp_state(upd.get("new_state"))
-            if new_state is not None:
-                feature["state"] = new_state
-            if upd.get("description"):
-                feature["description"] = upd["description"]
-        contradictions = payload.get("contradictions") or []
-        if contradictions:
-            for note in contradictions:
-                disease = self._find_disease(note.get("disease"))
-                feature = self._find_feature(disease, note.get("feature")) if disease else None
-                if feature:
-                    feature["state"] = self._clamp_state(note.get("new_state", -100))
+                disease_state["features"][feature_name] = feature_state
+            if disease_state["features"]:
+                new_table[disease_name] = disease_state
+        if not new_table:
+            raise ValueError("No diseases extracted from disease_builder response")
+        self.diseases = new_table
 
-    def _find_disease(self, name: str) -> Optional[Dict[str, Any]]:
-        diseases = self.differential.get("diseases") or []
-        name_lower = name.lower()
-        for disease in diseases:
-            if disease.get("name", "").lower() == name_lower:
-                return disease
-        return None
+    def _recompute_confidences(self) -> None:
+        for disease in self.diseases.values():
+            features = list(disease["features"].values())
+            total_weight = sum(max(float(f.get("weight", 0.0)), 0.0) for f in features)
+            if total_weight <= 0:
+                disease["confidence"] = 0.0
+                continue
+            known = [f for f in features if abs(float(f.get("status", 0))) > 0]
+            coverage = len(known) / max(len(features), 1)
+            weighted_sum = sum(max(float(f.get("weight", 0.0)), 0.0) * (float(f.get("status", 0)) / 100.0) for f in features)
+            normalized = (weighted_sum + total_weight) / (2 * total_weight)
+            normalized = _clamp(normalized, 0.0, 1.0)
+            disease["confidence"] = normalized * coverage
 
-    def _find_feature(self, disease: Optional[Dict[str, Any]], feature_name: str) -> Optional[Dict[str, Any]]:
-        if not disease:
-            return None
-        features = disease.get("features") or []
-        target = feature_name.lower()
-        for feat in features:
-            if feat.get("name", "").lower() == target:
-                return feat
-        return None
+    def _ready_to_diagnose(self) -> bool:
+        if not self.diseases:
+            return False
+        top_conf = max(d["confidence"] for d in self.diseases.values())
+        if top_conf >= self.confidence_threshold:
+            return True
+        if self.infs >= self.MAX_INFS - 1:
+            return True
+        return False
 
-    def _clamp_state(self, value: Any) -> Optional[int]:
-        if value is None:
-            return None
-        try:
-            numeric = int(round(float(value)))
-        except (TypeError, ValueError):
-            return None
-        return max(-100, min(100, numeric))
+    def _prepare_diagnosis_reply(self) -> str:
+        if not self.diseases:
+            return "DIAGNOSIS READY: Unknown"
+        top = max(self.diseases.values(), key=lambda d: d.get("confidence", 0.0))
+        diagnosis = top.get("name", "Unknown")
+        return f"DIAGNOSIS READY: {diagnosis}"
 
-    def _recompute_confidence(self) -> None:
-        confidences: Dict[str, float] = {}
-        diseases = self.differential.get("diseases") or []
-        for disease in diseases:
-            features = disease.get("features") or []
-            weights = [max(float(f.get("weight", 0.0)), 0.0) for f in features]
-            total_weight = sum(weights)
-            if total_weight <= 0.0:
-                disease_conf = 0.0
-            else:
-                weighted = 0.0
-                for idx, feat in enumerate(features):
-                    state = self._clamp_state(feat.get("state")) or 0
-                    weight_val = weights[idx]
-                    weighted += weight_val * (state / 100.0)
-                disease_conf = (weighted + total_weight) / (2.0 * total_weight)
-                disease_conf = max(0.0, min(1.0, disease_conf))
-            disease["confidence"] = round(disease_conf, 4)
-            confidences[disease.get("name", "")] = disease_conf
-        self.disease_confidence = confidences
-
-    def _refresh_priority_queue(self) -> None:
-        data = self._invoke_internal(
-            "plan_generation",
-            differential=json.dumps(self.differential, ensure_ascii=False),
-            confidence=json.dumps(self.disease_confidence, ensure_ascii=False),
-            observations=json.dumps(self._recent_observations(), ensure_ascii=False),
-            completed_tests=json.dumps(self.completed_tests, ensure_ascii=False),
-            remaining_turns=str(self.MAX_INFS - self.infs),
-        )
-        items = data.get("prioritized_items") or []
-        self.priority_queue = [item for item in items if item]
-
-    def _recent_observations(self, limit: int = 6) -> List[Dict[str, Any]]:
-        recent = self.observation_log[-limit:]
-        output = []
-        for entry in recent:
-            output.append(
+    def _choose_next_action(self) -> Dict[str, Any]:
+        if not self.priority_plan:
+            plan_payload = self._call_json_prompt(
+                "priority_planner",
                 {
-                    "type": entry.get("type"),
-                    "summary": entry.get("summary") or entry.get("raw"),
-                    "test_name": entry.get("test_name"),
+                    "disease_table": json.dumps(
+                        self._serialize_disease_table_for_prompt(include_reason=True),
+                        ensure_ascii=False,
+                    ),
+                    "completed_tests": json.dumps(self.completed_tests, ensure_ascii=False),
+                    "pending_tests": json.dumps(self.pending_tests, ensure_ascii=False),
+                    "max_items": self.max_plan_items,
+                },
+            )
+            decisions = plan_payload.get("decisions", []) if isinstance(plan_payload, dict) else []
+            if not isinstance(decisions, list):
+                raise ValueError("priority_planner must return decisions list")
+            self.priority_plan = decisions
+        if not self.priority_plan:
+            fallback = self._fallback_question()
+            self.last_action = fallback
+            return fallback
+        action = self.priority_plan.pop(0)
+        structured = self._normalize_action(action)
+        self.last_action = structured
+        return structured
+
+    def _normalize_action(self, action: Dict[str, Any]) -> Dict[str, Any]:
+        act_type = action.get("action_type", "ask")
+        feature = action.get("feature", "")
+        justification = action.get("justification", "")
+        if act_type == "test":
+            requested_test = action.get("test_name") or feature
+            resolved_name, _ = resolve_test_name(requested_test)
+            cost_tag = cost_level(resolved_name)
+            missing = missing_prerequisites(resolved_name, self.completed_tests, self.pending_tests)
+            urgency = str(action.get("urgency", "normal")).lower()
+            target_display = display_name(requested_test)
+            if missing and urgency != "urgent":
+                next_test = missing[0]
+                prereq_cost = cost_level(next_test)
+                pretty_name = display_name(next_test)
+                canonical = canonicalize_test_name(next_test)
+                if canonical not in self.pending_tests:
+                    self.pending_tests.append(canonical)
+                return {
+                    "type": "test",
+                    "feature": feature,
+                    "reason": f"Stepwise approach: perform {pretty_name} ({prereq_cost} cost) before {target_display}",
+                    "test_name": pretty_name,
+                }
+            pretty_name = target_display
+            canonical = canonicalize_test_name(requested_test)
+            if canonical not in self.pending_tests:
+                self.pending_tests.append(canonical)
+            target_label = feature or "the leading diagnosis"
+            reason_text = justification or f"Need {pretty_name} ({cost_tag} cost) to clarify {target_label}"
+            return {
+                "type": "test",
+                "feature": feature,
+                "reason": reason_text,
+                "test_name": pretty_name,
+            }
+        question = action.get("question") or self._default_question_for_feature(feature)
+        question = self._ensure_question_format(question)
+        return {
+            "type": "question",
+            "feature": feature,
+            "reason": justification,
+            "question": question,
+        }
+
+    def _default_question_for_feature(self, feature: str) -> str:
+        if not feature:
+            return "Can you describe more about your main symptoms in detail?"
+        return f"Can you tell me whether you have noticed {feature.lower()}?"
+
+    def _render_action(self, action: Dict[str, Any]) -> str:
+        if action.get("type") == "test":
+            test_name = action.get("test_name") or ""
+            if not test_name:
+                raise ValueError("Test action missing test_name")
+            return f"REQUEST TEST: {test_name}"
+        question = action.get("question")
+        if not question:
+            raise ValueError("Question action missing question text")
+        return question
+    def _fallback_question(self) -> Dict[str, Any]:
+        feature = self._find_uncertain_feature()
+        question = self._default_question_for_feature(feature)
+        question = self._ensure_question_format(question)
+        return {
+            "type": "question",
+            "feature": feature,
+            "reason": "Fallback exploration",
+            "question": question,
+        }
+
+    def _find_uncertain_feature(self) -> str:
+        best_feature = ""
+        best_weight = -1.0
+        for disease in self.diseases.values():
+            for feat in disease["features"].values():
+                status = abs(float(feat.get("status", 0)))
+                weight = float(feat.get("weight", 0.0))
+                if status <= 20 and weight > best_weight:
+                    best_weight = weight
+                    best_feature = feat.get("name", "")
+        return best_feature
+
+    def _ensure_question_format(self, text: str) -> str:
+        text = (text or "").strip()
+        if not text:
+            return "Could you tell me more about your symptoms?"
+        sentences = [s.strip() for s in re.split(r"(?<=[.!?])\s+", text) if s.strip()]
+        if len(sentences) > 3:
+            sentences = sentences[:3]
+        text = " ".join(sentences)
+        text = text.rstrip(".?!") + "?"
+        return text
+
+    def _serialize_disease_table_for_prompt(self, include_reason: bool = False, limit_features: int = 6) -> List[Dict[str, Any]]:
+        summary: List[Dict[str, Any]] = []
+        for disease in self.diseases.values():
+            features = list(disease["features"].values())
+            features_sorted = sorted(features, key=lambda f: float(f.get("weight", 0.0)), reverse=True)
+            formatted = []
+            for feat in features_sorted[:limit_features]:
+                formatted.append(
+                    {
+                        "name": feat.get("name"),
+                        "weight": feat.get("weight"),
+                        "status": feat.get("status"),
+                        "status_reason": feat.get("status_reason"),
+                        "data_type": feat.get("data_type"),
+                        "recommended_test": feat.get("recommended_test"),
+                        "cost_hint": feat.get("cost_hint"),
+                        "conflicts_with": feat.get("conflicts_with", []),
+                    }
+                )
+            entry = {
+                "name": disease.get("name"),
+                "confidence": disease.get("confidence", 0.0),
+                "features": formatted,
+            }
+            if include_reason:
+                entry["rationale"] = disease.get("rationale", "")
+            summary.append(entry)
+        return summary
+
+    def _summarize_observations(self, limit: int = 5) -> List[Dict[str, Any]]:
+        tail = self.observation_log[-limit:]
+        summary = []
+        offset = len(self.observation_log) - len(tail)
+        for idx, obs in enumerate(tail):
+            summary.append(
+                {
+                    "turn": offset + idx + 1,
+                    "type": obs.get("type"),
+                    "text": obs.get("text"),
                 }
             )
-        return output
+        return summary
 
-    def _choose_next_action(self, force_image_request: bool = False) -> str:
-        if self.infs >= self.MAX_INFS - 1:
-            return self._final_diagnosis()
+    def _call_json_prompt(self, section: str, template_args: Dict[str, Any], max_attempts: int = 3) -> Dict[str, Any]:
+        analysis_prompts = self.prompts.get("analysis", {})
+        if section not in analysis_prompts:
+            raise KeyError(f"Missing prompt section analysis.{section}")
+        section_prompts = analysis_prompts[section]
+        system_prompt = section_prompts["system"]
+        user_template = section_prompts["user_template"]
+        payload = dict(template_args)
+        payload.setdefault("error_hint", "")
+        last_error = ""
+        for attempt in range(max_attempts):
+            user_prompt = _render_template(user_template, payload)
+            raw = query_model(self.backend, user_prompt, system_prompt, scene=self.scenario)
+            try:
+                json_text = self._extract_json(raw)
+                return json.loads(json_text)
+            except Exception as exc:
+                last_error = str(exc)
+                payload["error_hint"] = (
+                    "\nPrevious attempt failed: "
+                    + last_error
+                    + " Please re-issue the response strictly as JSON matching the requested schema."
+                )
+        raise RuntimeError(f"Failed to obtain valid JSON from section '{section}' after {max_attempts} attempts: {last_error}")
 
-        best_name, best_conf = self._best_candidate()
-        if best_name and best_conf >= self.diagnosis_threshold:
-            return f"DIAGNOSIS READY: {best_name}"
+    @staticmethod
+    def _extract_json(text: str) -> str:
+        if not text:
+            raise ValueError("Empty response")
+        stripped = text.strip()
+        if stripped.startswith("{") or stripped.startswith("["):
+            return stripped
+        obj_start = stripped.find("{")
+        obj_end = stripped.rfind("}")
+        if obj_start != -1 and obj_end != -1 and obj_end > obj_start:
+            return stripped[obj_start : obj_end + 1]
+        arr_start = stripped.find("[")
+        arr_end = stripped.rfind("]")
+        if arr_start != -1 and arr_end != -1 and arr_end > arr_start:
+            return stripped[arr_start : arr_end + 1]
+        raise ValueError("No JSON object or array found in response")
 
-        if (best_conf or 0.0) <= self.reconsider_threshold and self.reassessments_done < self.max_reassessments:
-            self.reassessments_done += 1
-            self._reassess_differential()
-            best_name, best_conf = self._best_candidate()
-
-        while self.priority_queue:
-            item = self.priority_queue.pop(0)
-            action_text = self._render_action(item, force_image_request)
-            if action_text:
-                return action_text
-
-        self._refresh_priority_queue()
-        if not self.priority_queue:
-            return "Could you describe any other symptoms that concern you most right now?"
-        return self._render_action(self.priority_queue.pop(0), force_image_request) or "Could you describe any other symptoms that concern you most right now?"
-
-    def _render_action(self, item: Dict[str, Any], force_image_request: bool) -> Optional[str]:
-        action_type = (item.get("action_type") or "").lower()
-        if action_type == "test":
-            return self._handle_test_action(item, force_image_request)
-        if action_type == "ask":
-            question = item.get("question_text") or item.get("dialogue") or ""
-            question = question.strip()
-            if not question:
-                return None
-            if question in self.questions_asked:
-                return None
-            self.questions_asked.append(question)
-            return question
-        if action_type == "diagnosis":
-            candidate = item.get("diagnosis") or item.get("target_disease")
-            if candidate:
-                return f"DIAGNOSIS READY: {candidate}"
-        return None
-
-    def _handle_test_action(self, item: Dict[str, Any], force_image_request: bool) -> Optional[str]:
-        requested = item.get("test_name") or ""
-        requested = requested.strip()
-        if not requested:
-            return None
-        canonical = self._canonical_test_name(requested)
-        normalized = self._normalize_label(canonical)
-        if normalized in self.completed_tests_index:
-            return None
-
-        urgent = bool(item.get("allow_skip_predecessors")) or force_image_request
-        predecessor = self._select_predecessor(normalized, urgent)
-        final_test = predecessor or canonical
-        final_normalized = self._normalize_label(final_test)
-        if final_normalized in self.completed_tests_index:
-            return None
-
-        self.pending_test = {
-            "name": final_test,
-            "original": canonical,
-            "reason": item.get("reason"),
-        }
-        self.completed_tests_index.add(final_normalized)
-        self.completed_tests.append(final_test)
-        return f"REQUEST TEST: {final_test}"
-
-    def _select_predecessor(self, normalized_test: str, urgent: bool) -> Optional[str]:
-        reverse_lookup = {self._normalize_label(v): v for v in self._TEST_CANONICAL.values()}
-        predecessors = self._TEST_PREDECESSOR_RULES.get(normalized_test) or []
-        for pred in predecessors:
-            pred_norm = self._normalize_label(pred)
-            canonical = reverse_lookup.get(pred_norm, pred)
-            if pred_norm not in self.completed_tests_index and not urgent:
-                return canonical
-        if not urgent:
-            for fallback in self._LOW_COST_FALLBACK_TESTS:
-                fallback_norm = self._normalize_label(fallback)
-                if fallback_norm not in self.completed_tests_index:
-                    return fallback
-        return None
-
-    def _best_candidate(self) -> Tuple[Optional[str], float]:
-        if not self.disease_confidence:
-            return None, 0.0
-        best_name = max(self.disease_confidence, key=self.disease_confidence.get)
-        return best_name, self.disease_confidence.get(best_name, 0.0)
-
-    def _final_diagnosis(self) -> str:
-        best_name, _ = self._best_candidate()
-        if not best_name:
-            return "DIAGNOSIS READY: Undifferentiated illness"
-        return f"DIAGNOSIS READY: {best_name}"
-
-    def _reassess_differential(self) -> None:
-        basic_info = self._serialize_context(self.presentation)
-        table = self._invoke_internal(
-            "feature_table",
-            basic_info=basic_info,
-            known_features=json.dumps(self.differential, ensure_ascii=False),
-            candidate_diseases=json.dumps({"diseases": list(self.disease_confidence.keys())}, ensure_ascii=False),
+    def _should_reassess(self) -> bool:
+        if not self.diseases:
+            return False
+        max_conf = max(disease.get("confidence", 0.0) for disease in self.diseases.values())
+        known = sum(
+            1
+            for disease in self.diseases.values()
+            for feature in disease["features"].values()
+            if abs(float(feature.get("status", 0))) > 0
         )
-        self.differential = table
-        self._recompute_confidence()
-        self._refresh_priority_queue()
+        return max_conf <= self.reassessment_floor and known >= 3
 
 
-__all__ = ["EnhancedDoctorAgent"]
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
