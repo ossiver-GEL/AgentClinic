@@ -1,6 +1,10 @@
 import json
+import os
 import re
+import threading
+import time
 from typing import Any, Dict, List, Optional
+from uuid import uuid4
 
 from llm import query_model
 from agents.agent_tools import load_prompts_json
@@ -34,6 +38,26 @@ def _render_template(template: str, mapping: Dict[str, Any]) -> str:
         raise KeyError(f"Unresolved template keys: {leftovers}")
     return result
 
+_LOG_DIR = os.path.join(os.path.dirname(__file__), 'internal_runs')
+_LOG_DIR_LOCK = threading.Lock()
+
+
+def _ensure_log_dir() -> str:
+    with _LOG_DIR_LOCK:
+        if not os.path.isdir(_LOG_DIR):
+            os.makedirs(_LOG_DIR, exist_ok=True)
+    return _LOG_DIR
+
+
+def _make_json_safe(obj: Any) -> Any:
+    if isinstance(obj, (str, int, float, bool)) or obj is None:
+        return obj
+    if isinstance(obj, dict):
+        return {str(k): _make_json_safe(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple, set)):
+        return [_make_json_safe(v) for v in obj]
+    return repr(obj)
+
 
 class EnhancedDoctorAgent:
 
@@ -65,6 +89,10 @@ class EnhancedDoctorAgent:
         self.confidence_threshold = 0.9
         self.reassessment_floor = 0.05
         self.max_plan_items = 5
+        self._log_path: Optional[str] = ''
+        self._session_id = ''
+        self._log_sequence = 0
+        self._log_error_reported = False
         self.reset()
 
     def generate_bias(self) -> str:
@@ -76,13 +104,48 @@ class EnhancedDoctorAgent:
         print(f"BIAS TYPE {self.bias_present} NOT SUPPORTED, ignoring bias...")
         return ""
 
+    def _setup_logging(self) -> None:
+        log_dir = _ensure_log_dir()
+        self._session_id = uuid4().hex
+        stamp = time.strftime("%Y%m%d_%H%M%S", time.localtime())
+        self._log_path = os.path.join(log_dir, f"run_{stamp}_{self._session_id[:8]}.jsonl")
+        self._log_sequence = 0
+        self._log_error_reported = False
+        self._log_internal('log_session_opened', {'log_path': self._log_path})
+
+    def _log_internal(self, event: str, payload: Dict[str, Any]) -> None:
+        if not getattr(self, "_log_path", None):
+            return
+        record = {
+            "session_id": self._session_id,
+            "event": event,
+            "turn_index": self.infs,
+            "timestamp": time.time(),
+            "payload": _make_json_safe(payload),
+        }
+        record["index"] = self._log_sequence
+        self._log_sequence += 1
+        try:
+            with open(self._log_path, "a", encoding="utf-8") as fh:
+                fh.write(json.dumps(record, ensure_ascii=False) + "\n")
+        except Exception as exc:
+            if not self._log_error_reported:
+                self._log_error_reported = True
+                print(f"[EnhancedDoctorAgent] Logging failure: {exc}")
+
+    def _confidence_snapshot(self) -> Dict[str, float]:
+        return {name: round(float(info.get("confidence", 0.0)), 6) for name, info in self.diseases.items()}
+
     def inference_doctor(self, question: str, image_requested: bool = False) -> str:
         if self.infs >= self.MAX_INFS:
+            self._log_internal("inference_limit_reached", {"question": question, "image_requested": image_requested})
             return "Maximum inferences reached"
 
-        question = (question or "").strip()
-        if question:
-            self._handle_new_observation(question)
+        clean_question = (question or "").strip()
+        self._log_internal("inference_turn_start", {"turn_index": self.infs, "question": clean_question, "image_requested": image_requested})
+
+        if clean_question:
+            self._handle_new_observation(clean_question)
 
         self._ensure_initial_assessment()
         self._recompute_confidences()
@@ -91,14 +154,16 @@ class EnhancedDoctorAgent:
             self._ensure_initial_assessment(force=True)
             self._recompute_confidences()
 
-        reply: str
         if self._ready_to_diagnose():
             reply = self._prepare_diagnosis_reply()
+            stage = "diagnosis"
         else:
             action = self._choose_next_action()
             reply = self._render_action(action)
+            stage = "interaction"
 
-        self.agent_hist += question + "\n\n" + reply + "\n\n"
+        self.agent_hist += clean_question + "\n\n" + reply + "\n\n"
+        self._log_internal("inference_turn_end", {"turn_index": self.infs, "stage": stage, "reply": reply, "confidences": self._confidence_snapshot(), "remaining_plan": self.priority_plan, "completed_tests": self.completed_tests, "pending_tests": self.pending_tests})
         self.infs += 1
         return reply
 
@@ -130,12 +195,31 @@ class EnhancedDoctorAgent:
         self.last_action: Optional[Dict[str, Any]] = None
         self.plan_failures = 0
 
+        self._setup_logging()
+        scenario_meta = getattr(self.scenario, 'scenario_dict', None)
+        scenario_id = None
+        if isinstance(scenario_meta, dict):
+            scenario_id = scenario_meta.get('Scenario_ID') or scenario_meta.get('scenario_id') or scenario_meta.get('id')
+        self._log_internal(
+            'reset',
+            {
+                'scenario_id': scenario_id,
+                'presentation': self.presentation,
+                'patient_profile': self.patient_profile,
+                'physical_exam': self.physical_exam,
+                'available_tests': self.available_tests,
+            },
+        )
+
     # ------------------------
     # Core orchestration
     # ------------------------
     def _ensure_initial_assessment(self, force: bool = False) -> None:
         if self.initial_assessment_done and not force:
+            self._log_internal('ensure_initial_assessment_skip', {'force': force})
             return
+
+        self._log_internal('ensure_initial_assessment_start', {'force': force})
 
         base_context = {
             "examiner_objective": self.presentation,
@@ -144,6 +228,8 @@ class EnhancedDoctorAgent:
             "available_tests": self.available_tests[:20],
             "observation_summary": self._summarize_observations(limit=6),
         }
+        self._log_internal('ensure_initial_assessment_context', base_context)
+
         previous_state = self.diseases if force else {}
 
         features_payload = self._call_json_prompt(
@@ -155,6 +241,7 @@ class EnhancedDoctorAgent:
         if not isinstance(features_payload, dict):
             raise ValueError("feature_extractor response must be a JSON object")
         self.typical_features = features_payload.get("typical_features", [])
+        self._log_internal('ensure_initial_assessment_features', {'typical_features': self.typical_features})
 
         diseases_payload = self._call_json_prompt(
             "disease_builder",
@@ -167,8 +254,10 @@ class EnhancedDoctorAgent:
         if not isinstance(diseases_payload, dict):
             raise ValueError("disease_builder response must be a JSON object")
         self._ingest_disease_table(diseases_payload, previous_state)
+        self._log_internal('ensure_initial_assessment_diseases', {'diseases': self._serialize_disease_table_for_prompt(include_reason=True)})
         self.initial_assessment_done = True
         self.priority_plan = []
+        self._log_internal('ensure_initial_assessment_complete', {'confidences': self._confidence_snapshot()})
 
     def _handle_new_observation(self, observation: str) -> None:
         observation_type = "patient_response"
@@ -182,6 +271,8 @@ class EnhancedDoctorAgent:
                 if canonical not in self.completed_tests:
                     self.completed_tests.append(canonical)
         self.observation_log.append({"type": observation_type, "text": observation})
+        self._log_internal('observation_received', {'type': observation_type, 'text': observation, 'last_action': self.last_action})
+
         status_payload = self._call_json_prompt(
             "status_update",
             {
@@ -206,6 +297,7 @@ class EnhancedDoctorAgent:
         if status_payload.get("reconsider_diseases"):
             self.initial_assessment_done = False
         self.priority_plan = []
+        self._log_internal('status_update_applied', {'payload': status_payload, 'completed_tests': self.completed_tests, 'pending_tests': self.pending_tests, 'confidences': self._confidence_snapshot()})
 
     def _apply_status_updates(self, payload: Dict[str, Any]) -> None:
         updates = payload.get("updates", [])
@@ -326,6 +418,8 @@ class EnhancedDoctorAgent:
             normalized = _clamp(normalized, 0.0, 1.0)
             disease["confidence"] = normalized * coverage
 
+        self._log_internal('confidences_recomputed', {'confidences': self._confidence_snapshot()})
+
     def _ready_to_diagnose(self) -> bool:
         if not self.diseases:
             return False
@@ -338,9 +432,11 @@ class EnhancedDoctorAgent:
 
     def _prepare_diagnosis_reply(self) -> str:
         if not self.diseases:
+            self._log_internal('diagnosis_ready', {'diagnosis': 'Unknown', 'confidences': {}})
             return "DIAGNOSIS READY: Unknown"
         top = max(self.diseases.values(), key=lambda d: d.get("confidence", 0.0))
         diagnosis = top.get("name", "Unknown")
+        self._log_internal('diagnosis_ready', {'diagnosis': diagnosis, 'confidences': self._confidence_snapshot()})
         return f"DIAGNOSIS READY: {diagnosis}"
 
     def _choose_next_action(self) -> Dict[str, Any]:
@@ -361,13 +457,16 @@ class EnhancedDoctorAgent:
             if not isinstance(decisions, list):
                 raise ValueError("priority_planner must return decisions list")
             self.priority_plan = decisions
+            self._log_internal('priority_plan_ready', {'decisions': self.priority_plan})
         if not self.priority_plan:
             fallback = self._fallback_question()
             self.last_action = fallback
+            self._log_internal('action_selected', {'action': fallback, 'source': 'fallback'})
             return fallback
         action = self.priority_plan.pop(0)
         structured = self._normalize_action(action)
         self.last_action = structured
+        self._log_internal('action_selected', {'action': structured, 'original_decision': action, 'source': 'plan', 'remaining_plan': self.priority_plan})
         return structured
 
     def _normalize_action(self, action: Dict[str, Any]) -> Dict[str, Any]:
@@ -518,19 +617,27 @@ class EnhancedDoctorAgent:
         payload.setdefault("error_hint", "")
         last_error = ""
         for attempt in range(max_attempts):
+            attempt_index = attempt + 1
             user_prompt = _render_template(user_template, payload)
+            payload_snapshot = dict(payload)
+            self._log_internal("analysis_request", {"section": section, "attempt": attempt_index, "payload": payload_snapshot, "user_prompt": user_prompt})
             raw = query_model(self.backend, user_prompt, system_prompt, scene=self.scenario)
             try:
                 json_text = self._extract_json(raw)
-                return json.loads(json_text)
+                parsed = json.loads(json_text)
+                self._log_internal("analysis_response", {"section": section, "attempt": attempt_index, "raw": raw, "parsed": parsed})
+                return parsed
             except Exception as exc:
                 last_error = str(exc)
+                self._log_internal("analysis_response_error", {"section": section, "attempt": attempt_index, "error": last_error, "raw": raw})
                 payload["error_hint"] = (
                     "\nPrevious attempt failed: "
                     + last_error
                     + " Please re-issue the response strictly as JSON matching the requested schema."
                 )
+        self._log_internal("analysis_failure", {"section": section, "attempts": max_attempts, "last_error": last_error})
         raise RuntimeError(f"Failed to obtain valid JSON from section '{section}' after {max_attempts} attempts: {last_error}")
+
 
     @staticmethod
     def _extract_json(text: str) -> str:
@@ -560,24 +667,3 @@ class EnhancedDoctorAgent:
             if abs(float(feature.get("status", 0))) > 0
         )
         return max_conf <= self.reassessment_floor and known >= 3
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
