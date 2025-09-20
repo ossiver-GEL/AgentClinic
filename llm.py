@@ -276,7 +276,9 @@ def query_model(
                     ans = _extract_text_from_responses(resp)
                     if not ans:
                         raise RuntimeError("Empty response text from Responses API")
-                    print(f"[LLM:{eid}] responses ok, len={len(ans)}")
+                    
+                    print(f"[LLM:{eid}] ans: {ans}")
+
                     return re.sub(r"\s+", " ", ans)
                 except Exception as e:
                     last_error = e
@@ -285,7 +287,9 @@ def query_model(
                     ans = _extract_text_from_chat(resp)
                     if not ans:
                         raise RuntimeError("Empty response text from Chat API (fallback)")
-                    print(f"[LLM:{eid}] chat fallback ok, len={len(ans)}")
+                    
+                    print(f"[LLM:{eid}] chat fallback ans: {ans}")
+
                     return re.sub(r"\s+", " ", ans)
 
             # chat 优先（或强制 chat）
@@ -294,7 +298,9 @@ def query_model(
                 ans = _extract_text_from_chat(resp)
                 if not ans:
                     raise RuntimeError("Empty response text from Chat API")
-                print(f"[LLM:{eid}] chat ok, len={len(ans)}")
+                
+                print(f"[LLM:{eid}] ans: {ans}")
+
                 return re.sub(r"\s+", " ", ans)
             except Exception as e:
                 last_error = e
@@ -306,7 +312,9 @@ def query_model(
                 ans = _extract_text_from_responses(resp)
                 if not ans:
                     raise RuntimeError("Empty response text from Responses API (fallback)")
-                print(f"[LLM:{eid}] responses fallback ok, len={len(ans)}")
+                
+                print(f"[LLM:{eid}] responses fallback ans: {ans}")
+
                 return re.sub(r"\s+", " ", ans)
 
         except Exception as e:

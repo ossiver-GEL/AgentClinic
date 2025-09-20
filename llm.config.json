@@ -6,15 +6,15 @@
             "api_key": "sk-local-anything",
             "llm": {
                 "responses": {
-                    "temperature": 0.2,
+                    "temperature": 0.7,
                     "max_output_tokens": 400
                 },
                 "runtime": {
                     "llm_api": "chat",
-                    "tries": 5,
+                    "tries": 10,
                     "retry_delay": 1.0,
-                    "timeout": 20.0,
-                    "request_timeout": 60.0,
+                    "timeout": 120.0,
+                    "request_timeout": 120.0,
                     "clip_prompt": false,
                     "max_prompt_len": 16384
                 }
@@ -30,7 +30,7 @@
                 },
                 "runtime": {
                     "llm_api": "chat",
-                    "tries": 3,
+                    "tries": 10,
                     "retry_delay": 1.0,
                     "request_timeout": 120.0,
                     "clip_prompt": false,
@@ -48,7 +48,7 @@
                 },
                 "runtime": {
                     "llm_api": "response",
-                    "tries": 3,
+                    "tries": 10,
                     "retry_delay": 1.0,
                     "request_timeout": 120.0,
                     "clip_prompt": false,

@@ -13,7 +13,7 @@
     "doctor_image_request": false,
     "num_scenarios": 20,
     "total_inferences": 20,
-    "workers": 5,
+    "workers": 10,
     "use_enh": true
   },
   "datasets": {
