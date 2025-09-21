@@ -370,6 +370,7 @@ def main(config_path: str, llm_config_path: str, workers: Optional[int] = None):
         doctor_dialogue = ""
         diagnosed = False
         test_economics_log = []
+        scenario_cost_seen = set()
         scenario_cost_total = 0.0
         scenario_wait_total_min = 0.0
         scenario_duration_total_min = 0.0
@@ -437,11 +438,15 @@ def main(config_path: str, llm_config_path: str, workers: Optional[int] = None):
                     for ent in entries:
                         try:
                             name = ent.get("test_name") or req_name
-                            curr = ent.get("estimate_currency") or "USD"
+                            curr = (ent.get("estimate_currency") or "USD").upper()
                             cost = float(ent.get("estimate_cost") or 0)
                             wait_min = float(ent.get("expected_wait_time_minutes") or 0)
                             dur_min = float(ent.get("expected_duration_minutes") or 0)
                             assumptions = ent.get("assumptions") or ""
+                            canon_key = (name.strip().lower(), curr, resource_level)
+                            if canon_key in scenario_cost_seen:
+                                continue
+                            scenario_cost_seen.add(canon_key)
                             test_economics_log.append({
                                 "test_name": name,
                                 "estimate_currency": curr,

@@ -19,20 +19,20 @@
   },
   "analysis": {
     "feature_extractor": {
-      "system": "You are a clinical knowledge analyst. Given structured case information you must list typical findings already described or strongly implied. Output strictly valid JSON.",
+      "system": "You are a clinical knowledge analyst. Given structured case information you must list typical findings already described or strongly implied. You MUST output valid JSON ONLY.",
       "user_template": "You will receive JSON describing case basics. Analyse only what is PRESENT or IMPLIED; do not infer new facts.\nCase context JSON:\n{basic_info}\n{error_hint}\nReturn JSON with schema: {\"typical_features\": [{\"name\": str, \"description\": str, \"category\": \"history|exam|lab|imaging|risk\", \"source_field\": str, \"evidence_level\": \"strong|moderate|weak\"}]}."
     },
     "disease_builder": {
-      "system": "You are a diagnostic planner. Using candidate findings, propose the most plausible diseases and map confirming/refuting features. Respond with valid JSON only.",
+      "system": "You are a diagnostic planner. Using candidate findings, propose the most plausible diseases and map confirming/refuting features. You MUST output valid JSON ONLY.",
       "user_template": "Case basics:\n{basic_info}\nKnown typical features (JSON):\n{typical_features}\nExisting disease state (may be empty):\n{existing_diseases}\n{error_hint}\nReturn JSON: {\"diseases\": [{\"name\": str, \"rationale\": str, \"features\": [{\"name\": str, \"weight\": int (10-100), \"status\": int (-100 to 100), \"status_reason\": str, \"data_type\": \"history|exam|lab|imaging|other\", \"recommended_test\": str or null, \"cost_hint\": \"low|moderate|high\", \"conflicts_with\": [str]}]}]}. Weights reflect diagnostic importance. Status reflects current evidence from the case only.",
       "notes": "Ensure at least 3 and at most 5 diseases."
     },
     "status_update": {
-      "system": "You update feature evidence based on a single new observation. Only output JSON.",
+      "system": "You update feature evidence based on a single new observation. You MUST output valid JSON ONLY.",
       "user_template": "Latest observation package:\n{observation}\nCurrent disease table summary:\n{disease_table}\n{error_hint}\nReturn JSON: {\"updates\": [{\"disease\": str, \"feature\": str, \"status\": int (-100 to 100), \"status_reason\": str, \"weight\": int optional, \"recommended_test\": str or null, \"cost_hint\": str optional, \"conflicts_with\": [str] optional}], \"new_features\": [{\"disease\": str, \"feature\": str, \"weight\": int, \"status\": int, \"status_reason\": str, \"data_type\": str, \"recommended_test\": str or null, \"cost_hint\": str, \"conflicts_with\": [str]}], \"reconsider_diseases\": bool, \"prune_diseases\": [str] optional}. Update only items affected by the observation."
     },
     "priority_planner": {
-      "system": "You are a triage strategist. Rank the next diagnostic moves to clarify the leading diseases while minimizing cost and conflict. Output valid JSON only.",
+      "system": "You are a triage strategist. Rank the next diagnostic moves to clarify the leading diseases while minimizing cost and conflict. You MUST output valid JSON ONLY.",
       "user_template": "Current disease snapshot:\n{disease_table}\nCompleted tests: {completed_tests}\nPending tests: {pending_tests}\nPlan for up to {max_items} next actions. Each decision must focus on a single feature or conflict.\n{error_hint}\nReturn JSON: {\"decisions\": [{\"feature\": str, \"target_diseases\": [str], \"action_type\": \"ask\" or \"test\", \"question\": str when action_type=\"ask\" (one direct sentence), \"test_name\": str when action_type=\"test\", \"justification\": str, \"anticipated_signal\": \"presence|absence|value\", \"urgency\": \"normal|urgent\", \"cost_level\": \"low|moderate|high\"}]}. Order decisions from highest to lowest priority, considering weight, conflicts, and cost."
     }
   }

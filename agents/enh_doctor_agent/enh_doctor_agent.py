@@ -3,7 +3,7 @@ import os
 import re
 import threading
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 from uuid import uuid4
 
 from llm import query_model
@@ -291,6 +291,15 @@ class EnhancedDoctorAgent:
                 ),
             },
         )
+        if isinstance(status_payload, list):
+            self._log_internal('status_update_coerced_to_diseases', {'payload': status_payload})
+            previous_state = self.diseases
+            self._ingest_disease_table({"diseases": status_payload}, previous_state)
+            self.initial_assessment_done = True
+            self.priority_plan = []
+            self._recompute_confidences()
+            self._log_internal('status_update_coerced_complete', {'confidences': self._confidence_snapshot()})
+            return
         if not isinstance(status_payload, dict):
             raise ValueError("status_update response must be a JSON object")
         self._apply_status_updates(status_payload)
@@ -623,9 +632,13 @@ class EnhancedDoctorAgent:
             self._log_internal("analysis_request", {"section": section, "attempt": attempt_index, "payload": payload_snapshot, "user_prompt": user_prompt})
             raw = query_model(self.backend, user_prompt, system_prompt, scene=self.scenario)
             try:
-                json_text = self._extract_json(raw)
-                parsed = json.loads(json_text)
-                self._log_internal("analysis_response", {"section": section, "attempt": attempt_index, "raw": raw, "parsed": parsed})
+                parsed, remainder = self._extract_json(raw)
+                log_payload = {"section": section, "attempt": attempt_index, "raw": raw, "parsed": parsed}
+                if remainder:
+                    log_payload["extra"] = remainder[:1000]
+                self._log_internal("analysis_response", log_payload)
+                if remainder:
+                    self._log_internal("analysis_response_extra", {"section": section, "attempt": attempt_index, "extra": remainder[:2000]})
                 return parsed
             except Exception as exc:
                 last_error = str(exc)
@@ -640,21 +653,25 @@ class EnhancedDoctorAgent:
 
 
     @staticmethod
-    def _extract_json(text: str) -> str:
+    def _extract_json(text: str) -> Tuple[Any, str]:
         if not text:
             raise ValueError("Empty response")
         stripped = text.strip()
-        if stripped.startswith("{") or stripped.startswith("["):
-            return stripped
-        obj_start = stripped.find("{")
-        obj_end = stripped.rfind("}")
-        if obj_start != -1 and obj_end != -1 and obj_end > obj_start:
-            return stripped[obj_start : obj_end + 1]
-        arr_start = stripped.find("[")
-        arr_end = stripped.rfind("]")
-        if arr_start != -1 and arr_end != -1 and arr_end > arr_start:
-            return stripped[arr_start : arr_end + 1]
-        raise ValueError("No JSON object or array found in response")
+        decoder = json.JSONDecoder()
+        start_idx = None
+        for idx, ch in enumerate(stripped):
+            if ch in ("{", "["):
+                start_idx = idx
+                break
+        if start_idx is None:
+            raise ValueError("No JSON object or array found in response")
+        try:
+            obj, offset = decoder.raw_decode(stripped[start_idx:])
+        except json.JSONDecodeError as exc:
+            raise ValueError(str(exc))
+        end_idx = start_idx + offset
+        remainder = stripped[end_idx:].strip()
+        return obj, remainder
 
     def _should_reassess(self) -> bool:
         if not self.diseases:
@@ -667,3 +684,5 @@ class EnhancedDoctorAgent:
             if abs(float(feature.get("status", 0))) > 0
         )
         return max_conf <= self.reassessment_floor and known >= 3
+
+
