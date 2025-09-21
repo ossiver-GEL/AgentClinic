@@ -197,7 +197,7 @@ def query_model(
     clip_prompt: Optional[bool] = None,
 ) -> str:
     """按模型名路由到对应端点，默认优先 Responses API，失败时可回退 Chat（由 runtime.llm_api 决定）。"""
-    print(f"[LLM] model='{model_str}' \nsystem_prompt: '{system_prompt}' \nprompt='{prompt}'")
+    print(f"[LLM] model='{model_str}' \nsystem_prompt: '{system_prompt}' \nprompt: '{prompt}'")
 
     client, responses_cfg, runtime_cfg, eid = _resolve_endpoint_for_model(model_str)
 
