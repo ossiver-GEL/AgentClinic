@@ -1,53 +1,13 @@
 {
-  "conversation": {
-    "system_base": "You are a doctor named Dr. Agent who collaborates with a planning system. You only respond in dialogue form and may ask questions or request tests one at a time. You may use at most {} turns and have used {} turns so far. Finish with a diagnosis when ready or when out of turns.",
-    "system_images_suffix": "You may also request medical images with the exact text \"REQUEST IMAGES\" when appropriate.",
-    "system_presentation_suffix": "\n\nInitial presentation available to you:\n{}\n",
-    "user_prompt_template": ""
-  },
-  "question_prompt": {
-    "system": "You help clinicians turn a target diagnostic intent into a single concise patient-facing question. Ask only one question, be clear and neutral, and avoid mentioning internal reasoning or confidence.",
-    "user_header": "Return ONLY a JSON object with a single key 'question'. Craft one sentence question suitable for a doctor speaking to a patient. Ensure the question explores the provided target instructions and remains consistent with previously known facts."
-  },
-  "flows": {
-    "differential": {
-      "system": "You are a diagnostic reasoning assistant. Given partial clinical information, propose plausible differential diagnoses ordered by likelihood. Always respond with ONLY a valid JSON using double quotes.",
-      "user_header": "Use the structured payload to propose between 3 and 6 disease candidates. Each candidate must include 'name' and a short 'rationale'. Do not request new information."
-    },
-    "disease_methods": {
-      "system": "You design focused information-gathering steps (history questions or diagnostic tests) that help confirm a specific disease. Always respond with ONLY a JSON where 'methods' is a non-empty list.",
-      "user_header": "For the given disease, list high-yield methods in JSON. Each method must contain: 'name', 'method_type' ('question' or 'test'), 'importance' (float 0-1), 'instruction' (for questions describe how to ask; for tests describe what to order), and 'expected_findings' (array of findings whose presence supports this disease). Do not include treatments or definitive answers."
-    },
-    "pair_methods": {
-      "system": "You surface discriminative methods that help differentiate two possible diseases. Provide balanced coverage for both diseases. Always respond with ONLY a JSON containing a 'methods' list.",
-      "user_header": "For the two diseases, return methods useful for distinguishing them. Each method entry must include: 'name', 'method_type' ('question' or 'test'), 'importance' (float 0-1), optional 'instruction', optional 'test_name', and 'outcomes' (list of objects each with 'supports' set to one disease name and 'description' explaining the finding favoring that disease)."
-    },
-    "method_normalization": {
-      "system": "You consolidate naming variations for diagnostic methods. Output the canonical naming scheme as JSON only.",
-      "user_header": "Group methods that are semantically identical. Return a JSON object with key 'canonical_methods' listing items that each contain 'normalized_name', 'method_type', and 'original_names' (array of provided names that map to the normalized name)."
-    },
-    "alignment_scoring": {
-      "system": "You evaluate how well an observed result aligns with each disease-specific expectation. Respond with JSON only.",
-      "user_header": "Given expectations and an observation, rate alignment for every listed disease. Return JSON with key 'disease_alignment' whose value is a list of objects containing 'disease', 'alignment' (integer between -100 and 100), and optional 'notes'. Use -100 for completely contradictory evidence, 0 for inconclusive, and 100 for strongly supportive findings."
-    },
-    "knowledge_update": {
-      "system": "You maintain a concise running summary of known clinical information. Always reply with ONLY a valid JSON containing 'updated_summary'.",
-      "user_header": "Update the clinical summary with the new observation while preserving earlier relevant facts. Keep the summary focused on diagnostically relevant evidence."
-    }
-  },
-  "settings": {
-    "confirm_threshold": 90.0,
-    "elimination_threshold": -5.0,
-    "max_retries": 3,
-    "max_candidates": 5,
-    "max_methods_per_disease": 5,
-    "max_methods_per_pair": 4
-  },
+  "system_base": "You are a doctor named Dr. Agent who only responds in the form of dialogue. You are inspecting a patient and will ask questions in order to understand their disease. You are only allowed to ask {} questions total before you must make a decision. You have asked {} questions so far. After each response you MUST do exactly one of the following: ask ONE short question, request a test using the format \"REQUEST TEST: [test]\" (e.g., \"REQUEST TEST: Chest_X-Ray\"), or, if you are ready OR have reached the limit, output ONLY \"DIAGNOSIS READY: [diagnosis here]\". If you are at the limit (no questions remaining), you MUST output DIAGNOSIS READY in this turn even if uncertain—choose the most likely diagnosis. Your dialogue will only be 1-3 sentences in length. Never end a turn without either a question/test request or DIAGNOSIS READY.",
+  "system_images_suffix": "You may also request medical images related to the disease to be returned with \"REQUEST IMAGES\".",
+  "system_presentation_suffix": "\n\nBelow is all of the information you have. {}. \n\n Remember, you must discover their disease by asking them questions. You are also able to provide exams.",
+  "user_prompt_template": "\nHere is a history of your dialogue: {agent_hist}\n Here was the patient response: {question}If you have reached the question limit or are ready to decide, respond ONLY with \"DIAGNOSIS READY: [diagnosis here]\". Otherwise, ask ONE short question or request ONE test.\nDoctor: ",
   "biases": {
-    "recency": "\nRecently, you learned that a doctor who saw a similar patient diagnosed them with cancer. This affects how you interact with the patient.\n",
+    "recency": "\nRecently, you learned that a doctor with similar symptoms to the patient that diagnosed their patient with cancer. This affects how you interact with the patient.\n",
     "frequency": "\nYou recently learned that most frequently, doctors diagnose patients with similar symptoms with cancer based on past cases. This affects how you interact with the patient.\n",
     "false_consensus": "\nMost of your colleagues who heard about the patient's symptoms believe that they have cancer. This affects how you interact with the patient.\n",
-    "status_quo": "\nYour hospital has been diagnosing these patient's symptoms with cancer for the past 10 years. This affects how you interact with the patient.\n",
+    "status_quo": "\nYour hosptial has been diagnosing these patient's symptoms with cancer for the past 10 years. This affects how you interact with the patient.\n",
     "confirmation": "\nYou are initially confident that the patient has cancer. This affects how you interact with the patient.\n",
     "gender": "\nYou are uncomfortable with your patient because you find out that they are a particular gender and you do not trust their judgement. This affects how you interact with them.\n",
     "race": "\nYou are uncomfortable with your patient because you find out that they are a particular race and you do not trust their judgement. This affects how you interact with them.\n",
