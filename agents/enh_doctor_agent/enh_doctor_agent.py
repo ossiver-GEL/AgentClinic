@@ -176,15 +176,16 @@ class EnhancedDoctorAgent:
 
     def reset(self) -> None:
         self.agent_hist = ""
+        # Only expose the examiner presentation initially (same as simple DoctorAgent).
+        # Do NOT attach full patient or exam data here to avoid information leakage.
         self.presentation = self.scenario.examiner_information()
-        self.patient_profile = self.scenario.patient_information()
-        exam_info = self.scenario.exam_information()
-        self.physical_exam = {k: v for k, v in exam_info.items() if k != "tests"}
-        tests_dict = exam_info.get("tests", {})
-        if isinstance(tests_dict, dict):
-            self.available_tests = list(tests_dict.keys())
-        else:
-            self.available_tests = tests_dict if isinstance(tests_dict, list) else []
+        # Keep patient_profile private; enhanced agent must obtain details via interaction.
+        # Provide an empty dict as the starting patient profile (no direct case facts).
+        self.patient_profile = {}
+        # Do NOT expose available tests or any exam findings at reset.
+        # Enhanced agent must learn about tests via interaction (same as DoctorAgent).
+        self.physical_exam = {}
+        self.available_tests = []
         self.initial_assessment_done = False
         self.typical_features: List[Dict[str, Any]] = []
         self.diseases: Dict[str, Dict[str, Any]] = {}
@@ -200,14 +201,12 @@ class EnhancedDoctorAgent:
         scenario_id = None
         if isinstance(scenario_meta, dict):
             scenario_id = scenario_meta.get('Scenario_ID') or scenario_meta.get('scenario_id') or scenario_meta.get('id')
+        # Log a sanitized reset event: only include non-sensitive metadata.
         self._log_internal(
             'reset',
             {
                 'scenario_id': scenario_id,
                 'presentation': self.presentation,
-                'patient_profile': self.patient_profile,
-                'physical_exam': self.physical_exam,
-                'available_tests': self.available_tests,
             },
         )
 
@@ -221,11 +220,14 @@ class EnhancedDoctorAgent:
 
         self._log_internal('ensure_initial_assessment_start', {'force': force})
 
+        # Build an initial assessment context that mirrors the simple DoctorAgent:
+        # Only provide the examiner objective (presentation) and the list of available tests
+        # (names only). Do NOT include the full patient profile or physical exam findings.
         base_context = {
             "examiner_objective": self.presentation,
-            "patient_profile": self.patient_profile,
-            "physical_exam": self.physical_exam,
-            "available_tests": self.available_tests[:20],
+            # Do not include patient_profile or physical_exam or available_tests here.
+            "patient_profile": {},
+            "physical_exam": {},
             "observation_summary": self._summarize_observations(limit=6),
         }
         self._log_internal('ensure_initial_assessment_context', base_context)
