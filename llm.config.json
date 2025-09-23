@@ -43,7 +43,6 @@
             "api_key": "sk-piggFmUfUN7BcfdpxlxKqpGNkcEXic55xCUTPKK27RcbWB2x",
             "llm": {
                 "responses": {
-                    "temperature": 0.3,
                     "max_output_tokens": 512
                 },
                 "runtime": {

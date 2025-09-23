@@ -31,8 +31,9 @@ class EnhancedDoctorAgent:
         ]
 
         # Enhanced reasoning state
-        self.knowledge_pairs: List[Dict[str, str]] = []  # list of {action, result}
+        self.knowledge_pairs: List[Dict[str, str]] = []  # list of {action, goal?, result}
         self.last_action: Optional[str] = None  # last outward action text (question or REQUEST TEST...)
+        self.last_goal: Optional[str] = None  # optional purpose of last_action
         self.max_hypotheses = max_hypotheses
 
         # init
@@ -67,6 +68,8 @@ class EnhancedDoctorAgent:
         # Mandatory: if last remaining turn, must output a diagnosis immediately
         if self.infs == self.MAX_INFS - 1:
             answer = f"DIAGNOSIS READY: {hypotheses[0]}"
+            # set goal to finalize diagnosis
+            self.last_goal = "Finalize diagnosis"
             self._finalize_and_log(question, answer)
             return answer
 
@@ -78,15 +81,18 @@ class EnhancedDoctorAgent:
             # 6) Termination: if unique disease and nothing pending, finalize
             if all((not isinstance(p, str)) or (len(p.strip()) == 0) for p in pending) or len(pending) == 0:
                 answer = f"DIAGNOSIS READY: {d}"
+                self.last_goal = "Finalize diagnosis"
                 self._finalize_and_log(question, answer)
                 return answer
             # 4) Propose next best action to get pending evidence
+            goal_text = f"Confirm or refute {d}"
             need = f"Clarify remaining evidence for {d}: {', '.join([p for p in pending if isinstance(p, str)][:3])}"
             action = self._propose_next_action(I_text, need, allow_images=self.img_request, image_available=image_requested)
         else:
             d1, d2 = hypotheses[0], hypotheses[1]
             dual = self._analyze_dual(I_text, d1, d2, image_requested=image_requested)
             missing: List[str] = _ensure_list(dual.get("key_missing_info"))
+            goal_text = f"Differentiate between {d1} and {d2}"
             need = f"Differentiate between {d1} and {d2}; missing={', '.join([m for m in missing if isinstance(m, str)][:3])}"
             # 4) Propose next best action to differentiate top two
             action = self._propose_next_action(I_text, need, allow_images=self.img_request, image_available=image_requested)
@@ -96,13 +102,20 @@ class EnhancedDoctorAgent:
         if not isinstance(answer, str) or len(answer.strip()) == 0:
             raise RuntimeError("Proposed action is empty; cannot proceed.")
 
-        # Track last action for next turn integration
+        # Track last action and last goal for next turn integration
+        # Set last_goal when action is not immediate diagnosis (diagnosis handled above)
+        if 'goal_text' in locals():
+            self.last_goal = goal_text
+
         if answer.startswith("REQUEST TEST:"):
             self.last_action = answer
         elif answer.strip() == "REQUEST IMAGES":
             self.last_action = "REQUEST IMAGES"
         elif answer.startswith("DIAGNOSIS READY"):
             self.last_action = "Final diagnosis"
+            # ensure goal reflects finalization if not set
+            if not self.last_goal:
+                self.last_goal = "Finalize diagnosis"
         else:
             # treat as the exact question text
             self.last_action = answer
@@ -119,6 +132,7 @@ class EnhancedDoctorAgent:
         # Reset enhanced state
         self.knowledge_pairs = []
         self.last_action = None
+        self.last_goal = None
         # Add initial known info pair from presentation
         if isinstance(self.presentation, str) and self.presentation.strip():
             self.knowledge_pairs.append({
@@ -143,7 +157,7 @@ class EnhancedDoctorAgent:
         return prompts.get(self.bias_present, "")
 
     def _integrate_last_result(self, result_text: str) -> None:
-        """Condense last action and its result into a compact {o,i} pair and add to I."""
+        """Condense last action and its result into a compact {o,g,i} triple and add to I."""
         if not self.last_action:
             return
         if not result_text or not isinstance(result_text, str) or len(result_text.strip()) == 0:
@@ -158,22 +172,33 @@ class EnhancedDoctorAgent:
         tmpl = internal.get("condense_oi")
         if not tmpl:
             raise FileNotFoundError("Missing 'condense_oi' in internal prompts.")
-        prompt = tmpl.format(o=self.last_action, i=cleaned)
+        # pass goal optionally (may be empty)
+        g = self.last_goal or ""
+        prompt = tmpl.format(o=self.last_action, g=g, i=cleaned)
         resp = query_model(self.backend, prompt, sys)
         data = _parse_json_or_raise(resp)
         action = data.get("action")
         result = data.get("result")
+        goal = data.get("goal")
         if not (isinstance(action, str) and isinstance(result, str)):
             raise ValueError("Invalid condense_oi JSON: expected 'action' and 'result' strings.")
-        self.knowledge_pairs.append({"action": action.strip(), "result": result.strip()})
+        # goal is optional; include if present and non-empty
+        entry: Dict[str, str] = {"action": action.strip(), "result": result.strip()}
+        if isinstance(goal, str) and goal.strip():
+            entry["goal"] = goal.strip()
+        self.knowledge_pairs.append(entry)
 
     def _format_I_text(self) -> str:
         parts = []
         for idx, pair in enumerate(self.knowledge_pairs, start=1):
             a = pair.get("action", "").strip()
+            g = pair.get("goal", "").strip()
             r = pair.get("result", "").strip()
-            if a or r:
-                parts.append(f"{idx}. Action: {a}; Result: {r}")
+            if a or g or r:
+                if g:
+                    parts.append(f"{idx}. Action: {a}; Goal: {g}; Result: {r}")
+                else:
+                    parts.append(f"{idx}. Action: {a}; Result: {r}")
         return "\n".join(parts) if parts else "(no info)"
 
     def _gen_hypotheses(self, I_text: str, image_requested: bool) -> List[str]:
